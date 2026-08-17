@@ -1,0 +1,77 @@
+# Quickstart — download from Yandex Music in 3 steps
+
+Goal: get audio files from `music.yandex.ru` with `yt-dlp`.
+~2 minutes. Everything else in this repo is optional.
+
+## 0. What you need
+
+* `yt-dlp` (any recent version — the plugin does the work, not yt-dlp)
+* `ffmpeg` (only if you want to convert/re-mux)
+* A Netscape-format cookie file from a logged-in Yandex Music browser
+  session (browser extension "Get cookies.txt LOCALLY" or similar).
+  The cookies must include the `.yandex.ru`-domain session cookies
+  (they cover `api.music.yandex.ru` automatically).
+
+## 1. Install the plugin (once)
+
+```sh
+git clone <this repo> ~/project/yt-dlp-yandex-music-plugin
+cd ~/project/yt-dlp-yandex-music-plugin
+mkdir -p ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor
+cp yt_dlp_plugins/extractor/yandex_music_v2.py \
+   ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor/
+```
+
+Verify (both lines should appear):
+
+```sh
+yt-dlp --list-extractors | grep yandexmusic
+# yandexmusic:track
+# yandexmusicv2:playlist
+```
+
+No-install alternative for a one-off run:
+
+```sh
+yt-dlp --plugin-dir <repo>/yt_dlp_plugins ...   # see step 2
+```
+
+## 2. Download
+
+```sh
+yt-dlp --cookies /path/to/cookies.txt \
+  -o '%(playlist_index)02d - %(artist)s - %(title)s.%(ext)s' \
+  'https://music.yandex.ru/playlists/<uuid>'
+```
+
+That's it. Notes:
+
+* **Single track:** `yt-dlp --cookies cookies.txt 'https://music.yandex.ru/album/<albumId>/track/<trackId>'`
+  (bare `https://music.yandex.ru/track/<trackId>` works too)
+* **Only some tracks:** add `-I 1-5` (first five), `-I 3` (one), `-I 10-20` (range)
+* **Output dir:** add `-P /path/to/dir`
+* You get the best quality the server offers: FLAC if available, else
+  MP3 320 kbps (Plus account), unencrypted, no decryption step.
+
+## 3. Check the result
+
+```sh
+ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 file.mp3
+# -> 173.06,320000   (seconds, kbps)
+```
+
+## Troubleshooting (30 seconds)
+
+| Symptom | Fix |
+|---|---|
+| `HTTP 403 ... "not-allowed"` | The frontend signing key rotated. Run `python3 tools/extract_secret_key.py --check` and update `_SECRET_KEY` in the plugin if it reports MISMATCH. |
+| `playlist data not found in page` | Playlist is private/deleted, or cookies are stale — re-export them. |
+| `not available` for a track | Track is geo/subscription-blocked for your account. |
+| Cyrillic in filenames | yt-dlp doesn't transliterate; use `tools/standalone_download.py` (does it, plus writes an M3U). |
+| Sanity check before a big run | `python3 tests/test_sign.py` — if it passes, the key is current. |
+
+## Going further
+
+* `README.md` — install options, standalone downloader, project layout
+* `research/api-notes.md` — the full reverse-engineering writeup
+* `tools/` — key extractor + yt-dlp-free downloader

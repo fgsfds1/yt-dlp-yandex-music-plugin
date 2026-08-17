@@ -7,6 +7,9 @@ The built-in yt-dlp Yandex Music extractor is broken upstream: it calls
 the retired `handlers/*.jsx` endpoints and crashes. This project
 reverse-engineered the current web API and replaces the extractor.
 
+**Just want to download something? → [`QUICKSTART.md`](QUICKSTART.md)**
+(3 steps: install, cookies, one command.)
+
 ## What it does
 
 * Fixes `https://music.yandex.ru/album/<albumId>/track/<trackId>`
@@ -97,6 +100,7 @@ app traffic (2026-08-17), including the codecs-without-commas gotcha.
 ## Layout
 
 ```
+QUICKSTART.md                             3-step how-to (start here)
 yt_dlp_plugins/extractor/yandex_music_v2.py   the plugin
 tools/extract_secret_key.py                   re-extract the HMAC key
 tools/standalone_download.py                  yt-dlp-free downloader + M3U
