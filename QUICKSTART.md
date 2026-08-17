@@ -22,13 +22,16 @@ cp yt_dlp_plugins/extractor/yandex_music_v2.py \
    ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor/
 ```
 
-Verify (both lines should appear):
+Verify (both lines should say OK):
 
 ```sh
-yt-dlp --list-extractors | grep yandexmusic
-# yandexmusic:track
-# yandexmusicv2:playlist
+python3 tools/check_install.py
+# OK:  yandexmusic:track      -> plugin (shadows broken built-in)
+# OK:  yandexmusicv2:playlist -> plugin (shared playlists)
 ```
+
+(Not `yt-dlp --list-extractors` — yt-dlp processes that flag *before*
+loading plugins, so plugin extractors never appear in its list.)
 
 No-install alternative for a one-off run:
 

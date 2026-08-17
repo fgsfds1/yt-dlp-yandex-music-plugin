@@ -38,13 +38,16 @@ scans for `yt_dlp_plugins.extractor` automatically):
 pip install --user .        # or: pipx/uv tool install .
 ```
 
-Verify:
+Verify (both lines should say OK):
 
 ```sh
-yt-dlp --list-extractors | grep yandexmusic
-# yandexmusic:track        <- now served by the plugin
-# yandexmusicv2:playlist   <- new: shared playlist URLs
+python3 tools/check_install.py
+# OK:  yandexmusic:track      -> plugin (shadows broken built-in)
+# OK:  yandexmusicv2:playlist -> plugin (shared playlists)
 ```
+
+Note: `yt-dlp --list-extractors` won't show the plugin — yt-dlp handles
+that flag before loading plugins.
 
 ## Usage
 
@@ -102,6 +105,7 @@ app traffic (2026-08-17), including the codecs-without-commas gotcha.
 ```
 QUICKSTART.md                             3-step how-to (start here)
 yt_dlp_plugins/extractor/yandex_music_v2.py   the plugin
+tools/check_install.py                      verify the plugin is installed
 tools/extract_secret_key.py                   re-extract the HMAC key
 tools/standalone_download.py                  yt-dlp-free downloader + M3U
 tests/test_sign.py                            sign-algorithm regression tests
