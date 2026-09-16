@@ -323,7 +323,16 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                         f'{new_key!r} (frontend changed). Pass '
                         f'--extractor-args "yandexmusicv2:hmac_key={new_key}" '
                         f'to skip the auto-refresh')
-                    di = _get_download_info(self, track_id, quality)
+                    try:
+                        di = _get_download_info(self, track_id, quality)
+                    except _KeyRejected:
+                        raise ExtractorError(
+                            'Yandex Music: the refreshed signing key was also '
+                            'rejected — the frontend may have changed in a way '
+                            'the auto-refresh does not handle. Extract the key '
+                            'with tools/extract_secret_key.py and pass it via '
+                            '--extractor-args "yandexmusicv2:hmac_key=<key>"',
+                            expected=True) from None
                     break
                 raise ExtractorError(
                     'Yandex Music: request signature rejected (403 not-allowed) '
@@ -378,20 +387,13 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
                 'Yandex Music: playlist data not found in page '
                 '(is the playlist public and are cookies valid?)', expected=True)
         j = payload.find('{', i)
-        depth = 0
-        end = None
-        for k in range(j, len(payload)):
-            c = payload[k]
-            if c == '{':
-                depth += 1
-            elif c == '}':
-                depth -= 1
-                if depth == 0:
-                    end = k + 1
-                    break
-        if end is None:
+        # raw_decode: unlike manual brace counting, it handles {/} inside
+        # JSON string values (playlist descriptions, track titles, ...)
+        try:
+            data, _ = json.JSONDecoder().raw_decode(payload, j)
+        except json.JSONDecodeError:
             raise ExtractorError('Yandex Music: malformed playlist data')
-        return json.loads(payload[j:end])
+        return data
 
     def _real_extract(self, url):
         playlist_uuid = self._match_id(url)

@@ -25,7 +25,10 @@ classifiers = [
 ]
 # The plugin is passive: yt-dlp is the host, only needed at runtime.
 # Declaring it makes `pip install yt-dlp-yandex-music` work in a fresh venv.
-dependencies = ["yt-dlp>=2024.03.10"]
+# Floor: shadowing the built-in extractor only works from 2025.3.21 on —
+# older versions keep the built-in on name collision (verified 2024.03.10
+# through 2025.6.9). tests.yml has a job that pins this floor.
+dependencies = ["yt-dlp>=2025.3.21"]
 
 [project.urls]
 Homepage = "https://github.com/fgsfds1/yt-dlp-yandex-music-plugin"

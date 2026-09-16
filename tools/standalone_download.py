@@ -56,7 +56,7 @@ CYR = {
     'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya',
     'І': 'I', 'Ї': 'Yi', 'Є': 'Ye', 'Ґ': 'G', 'Ў': 'U',
 }
-INVALID = ':*?"<>|\\'
+INVALID = ':*?"<>|\\/'
 RESERVED = {'CON', 'PRN', 'AUX', 'NUL'} | \
     {f'COM{i}' for i in range(1, 10)} | {f'LPT{i}' for i in range(1, 10)}
 
@@ -109,7 +109,10 @@ def api_get(url, cookie, note=''):
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode('utf-8', 'replace')[:300]
-        raise SystemExit(f'HTTP {e.code} for {note or url}\n{body}')
+        # RuntimeError (not SystemExit): SystemExit is a BaseException, so it
+        # would skip the per-track `except Exception` handlers and abort the
+        # whole run on a single 4xx/5xx
+        raise RuntimeError(f'HTTP {e.code} for {note or url}\n{body}') from None
 
 
 def get_track_meta(cookie, track_id):
@@ -152,15 +155,12 @@ def parse_playlist_page(html):
     if i == -1:
         raise SystemExit('playlist data not found in page (public playlist + valid cookies?)')
     j = payload.find('{', i)
-    depth = 0
-    for k in range(j, len(payload)):
-        if payload[k] == '{':
-            depth += 1
-        elif payload[k] == '}':
-            depth -= 1
-            if depth == 0:
-                return json.loads(payload[j:k + 1])
-    raise SystemExit('malformed playlist data')
+    # raw_decode: handles {/} inside JSON string values (playlist
+    # descriptions, track titles, ...) — manual brace counting does not
+    try:
+        return json.JSONDecoder().raw_decode(payload, j)[0]
+    except json.JSONDecodeError:
+        raise SystemExit('malformed playlist data')
 
 
 def main():
@@ -221,7 +221,9 @@ def main():
             lines = [f'{prefix}\\{f}' for f in m3u_lines]
         else:
             lines = [os.path.join(args.out, f) for f in m3u_lines]
-        with open(args.m3u, 'w', encoding='ascii', newline='\n') as f:
+        # utf-8: --out may contain non-ASCII (ascii crashed after all
+        # downloads had finished); M3U players handle UTF-8 fine
+        with open(args.m3u, 'w', encoding='utf-8', newline='\n') as f:
             f.write('\n'.join(lines) + '\n')
         print(f'M3U written: {args.m3u} ({len(lines)} entries)')
 

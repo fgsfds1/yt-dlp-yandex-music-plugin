@@ -57,10 +57,12 @@ python3 tools/check_install.py   # from the repo checkout
 (Not `yt-dlp --list-extractors` — yt-dlp processes that flag *before*
 loading plugins, so plugin extractors never appear in its list.)
 
-No-install alternative for a one-off run:
+No-install alternative for a one-off run. Note: the flag is
+`--plugin-dirs` (plural), and it scans the **subdirectories** of the given
+dir for a `yt_dlp_plugins/` tree — so point it at the repo's *parent*:
 
 ```sh
-yt-dlp --plugin-dir <repo>/yt_dlp_plugins ...   # see step 2
+yt-dlp --plugin-dirs <repo>/.. ...   # see step 2
 ```
 
 ## 2. Download
@@ -96,7 +98,7 @@ ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 file.mp3
 | `playlist data not found in page` | Playlist is private/deleted, or cookies are stale — re-export them. |
 | `not available` for a track | Track is geo/subscription-blocked for your account. |
 | Cyrillic in filenames | yt-dlp doesn't transliterate; use `tools/standalone_download.py` (does it, plus writes an M3U). |
-| Sanity check before a big run | `python3 tests/test_sign.py` — if it passes, the key is current. |
+| Sanity check before a big run | `python3 tests/test_sign.py` verifies the signing *algorithm* (catches code regressions). To check whether the *key* is still current, run `python3 tools/extract_secret_key.py --check`. |
 
 ## Going further
 

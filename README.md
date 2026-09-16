@@ -42,7 +42,10 @@ pipx inject yt-dlp yt-dlp-yandex-music
 **Option B — from this repo:**
 
 ```sh
-pip install --user .        # or: pipx/uv tool install .
+pip install --user .
+# if your yt-dlp is a pipx install:  pipx inject yt-dlp <repo>
+# (not `pipx/uv tool install .` — that creates an isolated venv where no
+#  yt-dlp runs, so the plugin would never be discovered)
 ```
 
 **Option C — drop-in (no build, no pip):**
