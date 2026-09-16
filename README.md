@@ -7,7 +7,7 @@ The built-in yt-dlp Yandex Music extractor is broken upstream: it calls
 the retired `handlers/*.jsx` endpoints and crashes. This project
 reverse-engineered the current web API and replaces the extractor.
 
-**Just want to download something? → [`QUICKSTART.md`](QUICKSTART.md)**
+**Just want to download something? → [`QUICKSTART.md`](https://github.com/fgsfds1/yt-dlp-yandex-music-plugin/blob/master/QUICKSTART.md)**
 (3 steps: install, cookies, one command.)
 
 ## What it does
