@@ -211,6 +211,28 @@ payload, then use endpoints 1–4.
 Web app "stream quality" setting → API quality:
 `high_quality→lossless`, `balanced→nq`, `efficient→lq`, `preview→preview`.
 
+Valid `quality` values (2026-09-16): `lossless`, `nq`, `lq` — anything else
+(e.g. `hi`, `q`) → HTTP 400 `illegal-argument`.
+
+### Determining available qualities (2026-09-16)
+
+* **No metadata field:** track (`POST /tracks`), album (`GET /albums/<id>`)
+  and search (`GET /search?text=…&type=track&page=0`) objects carry no
+  quality/codec/lossless flag (all keys checked).
+* **Only way: probe `get-file-info`** — the served `downloadInfo`
+  (`quality`/`codec`/`bitrate`) is the availability indicator:
+  request `lossless` + `codecs=flac,mp3` → server serves the best it has
+  (flac if available, else mp3 320, else mp3 192).
+* **Batch variant works and is cheap:** `GET /get-file-info/batch` with
+  comma-joined `trackIds` (signed over the same comma-joined string),
+  ~20 ids per request → 1500 tracks ≈ 75 requests.
+* **Account-level finding:** ~1700 tracks probed (search results for 8
+  major artists + a shared playlist + the full 1496-track favorites
+  library) → **1536× mp3/320k, 4× mp3/192k, 0× flac**. No FLAC badge or
+  FLAC setting exists in the web UI either → FLAC is simply not offered
+  for this account/tier; "High" quality = MP3 320. Some tracks only have
+  192k (the `nq` fallback covers those).
+
 AAC/MP4 (`aac-mp4`, `he-aac-mp4`) is **not** streamable by BASS — for the
 NFSMW use case only `mp3` (≥192) / `flac` / `ogg` / `wav` are acceptable,
 hence `codecs=flac,mp3` + `transport=raw`.
