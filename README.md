@@ -27,7 +27,26 @@ reverse-engineered the current web API and replaces the extractor.
 
 ## Install
 
-**Option A — drop-in (no build):**
+**Option A — PyPI (recommended):**
+
+```sh
+pip install yt-dlp-yandex-music
+```
+
+If your yt-dlp lives in a **pipx** install, the plugin must go into the
+same environment:
+
+```sh
+pipx inject yt-dlp yt-dlp-yandex-music
+```
+
+**Option B — from this repo:**
+
+```sh
+pip install --user .        # or: pipx/uv tool install .
+```
+
+**Option C — drop-in (no build, no pip):**
 
 ```sh
 mkdir -p ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor
@@ -35,12 +54,8 @@ cp yt_dlp_plugins/extractor/yandex_music_v2.py \
    ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor/
 ```
 
-**Option B — pip package** (installs into site-packages, which yt-dlp
-scans for `yt_dlp_plugins.extractor` automatically):
-
-```sh
-pip install --user .        # or: pipx/uv tool install .
-```
+All options install into a location yt-dlp scans for the
+`yt_dlp_plugins.extractor` namespace automatically.
 
 Verify (both lines should say OK):
 
@@ -109,6 +124,42 @@ The `hmac_key` extractor-arg also works for testing/overrides and takes
 priority over the auto-refresh. Accepted names: `yandexmusicv2`,
 `yandexmusic`, `yandexmusic:track`, `yandexmusicv2:playlist`.
 
+## Versioning
+
+CalVer, in the style of yt-dlp itself: `YYYY.MM.DD` (e.g. `2026.09.16`),
+with optional suffixes:
+
+* `YYYY.MM.DD.N` — same-day re-release (e.g. `2026.09.16.1`)
+* `YYYY.MM.DDrcN` — pre-release (e.g. `2026.09.16rc1`)
+
+The version is **the git tag** — releases are tagged and published by
+CI (`.github/workflows/publish.yml`), so there is no version field to
+bump by hand. PyPI versions are immutable: one tag = one release, and a
+broken release gets a new date, not a re-upload. Release notes live in
+GitHub Releases.
+
+## Publishing (maintainers)
+
+1. Commit the changes to `master`.
+2. Tag the commit with the CalVer version (no `v` prefix):
+   `git tag 2026.09.16 && git push origin 2026.09.16`
+3. On GitHub: **Releases → Create a new release** → pick the tag →
+   write notes → **Publish release**. (Tick *pre-release* for `rcN` tags.)
+4. The `Publish to PyPI` workflow builds sdist+wheel and uploads them via
+   PyPI **Trusted Publishing** (OIDC — no API token in the repo).
+
+One-time setup (do once, before the first release):
+
+1. GitHub → repo **Settings → Environments → New environment: `pypi`**
+2. PyPI → your account → **Publishing** → add a *pending* GitHub
+   publisher: owner `fgsfds1`, repo `yt-dlp-yandex-music-plugin`,
+   workflow `publish.yml`, environment `pypi`, project name
+   `yt-dlp-yandex-music`. The project is created automatically on first
+   publish (the name is not reserved until then).
+
+If you ever move the repo or rename the workflow, re-register the
+publisher at PyPI → account → Publishing.
+
 ## Tests
 
 ```sh
@@ -117,6 +168,9 @@ python3 tests/test_sign.py
 
 Verifies the signing algorithm against signatures captured from live web
 app traffic (2026-08-17), including the codecs-without-commas gotcha.
+
+CI runs these on every push/PR (`.github/workflows/tests.yml`), on
+Python 3.10–3.14, plus a packaging build check.
 
 ## Layout
 

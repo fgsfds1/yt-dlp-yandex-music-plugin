@@ -30,18 +30,26 @@ Goal: get audio files from `music.yandex.ru` with `yt-dlp`.
 
 ## 1. Install the plugin (once)
 
+**From PyPI (recommended):**
+
+```sh
+pip install yt-dlp-yandex-music
+# if your yt-dlp is a pipx install:
+pipx inject yt-dlp yt-dlp-yandex-music
+```
+
+**Or from the repo** (latest master, possibly newer than PyPI):
+
 ```sh
 git clone <this repo> ~/project/yt-dlp-yandex-music-plugin
 cd ~/project/yt-dlp-yandex-music-plugin
-mkdir -p ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor
-cp yt_dlp_plugins/extractor/yandex_music_v2.py \
-   ~/.config/yt-dlp/plugins/yandex-music-v2/yt_dlp_plugins/extractor/
+pip install --user .
 ```
 
 Verify (both lines should say OK):
 
 ```sh
-python3 tools/check_install.py
+python3 tools/check_install.py   # from the repo checkout
 # OK:  yandexmusic:track      -> plugin (shadows broken built-in)
 # OK:  yandexmusicv2:playlist -> plugin (shared playlists)
 ```

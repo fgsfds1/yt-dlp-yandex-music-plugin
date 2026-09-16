@@ -3,23 +3,34 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "yt-dlp-yandex-music-v2"
-version = "1.0.0"
+name = "yt-dlp-yandex-music"
+# CalVer: YYYY.MM.DD, optional same-day re-release suffix (.N) or
+# pre-release suffix (rcN). The value below is a placeholder for local
+# builds — releases get their version from the git tag via
+# .github/workflows/publish.yml.
+version = "0.0.0"
 description = "yt-dlp plugin: Yandex Music via the modern api.music.yandex.ru (fixes the broken built-in extractor, adds shared-playlist URL support)"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "lw" }]
-keywords = ["yt-dlp", "plugin", "yandex-music", "extractor"]
+keywords = ["yt-dlp", "yt-dlp-plugins", "plugin", "yandex-music", "extractor"]
 classifiers = [
+    "Environment :: Console",
+    "Environment :: Plugins",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Sound/Audio",
 ]
-# the plugin is passive; yt-dlp is only needed at runtime by the host
-dependencies = []
+# The plugin is passive: yt-dlp is the host, only needed at runtime.
+# Declaring it makes `pip install yt-dlp-yandex-music` work in a fresh venv.
+dependencies = ["yt-dlp>=2024.03.10"]
 
 [project.urls]
 Homepage = "https://github.com/fgsfds1/yt-dlp-yandex-music-plugin"
+Repository = "https://github.com/fgsfds1/yt-dlp-yandex-music-plugin"
+Issues = "https://github.com/fgsfds1/yt-dlp-yandex-music-plugin/issues"
 
 [tool.setuptools]
 # namespace package layout expected by yt-dlp's plugin loader:
