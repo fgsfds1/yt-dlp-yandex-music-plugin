@@ -19,11 +19,10 @@ reverse-engineered the current web API and replaces the extractor.
 * Downloads the best available audio: FLAC where the server offers it,
   otherwise MP3 320 kbps (falls back to MP3 192). Unencrypted `raw`
   transport — no client-side decryption.
-* Requires a logged-in (paid) account: pass your cookies with `--cookies`
-  (Netscape format, tab-separated, must include the `.yandex.ru`
-  `Session_id` cookie). Without a valid session the API silently returns
-  `smart_preview` streams — downloads "succeed" but files are ~13–30 s.
-  See the troubleshooting table in `QUICKSTART.md`.
+* Requires a logged-in (paid) account — see
+  [Session (cookies)](#session-cookies). Without a valid session the API
+  silently returns `smart_preview` streams — downloads "succeed" but
+  files are ~13–30 s.
 
 ## Install
 
@@ -68,10 +67,44 @@ python3 tools/check_install.py
 Note: `yt-dlp --list-extractors` won't show the plugin — yt-dlp handles
 that flag before loading plugins.
 
+## Session (cookies)
+
+The plugin talks to the unofficial web API with **your** Yandex session.
+Two ways to provide it:
+
+**From your browser directly (no export):**
+
+```sh
+yt-dlp --cookies-from-browser <browser>[:<profile-dir>] ...
+# e.g. for the Helium browser (KDE):
+yt-dlp --cookies-from-browser chromium:~/.config/net.imput.helium/Default ...
+```
+
+The browser name must match where the browser stores its cookie-
+encryption key: Helium registers it as *Chromium Safe Storage*, so use
+`chromium`, not `chrome`. Needs the keychain/KWallet to be reachable
+(i.e. a running desktop session — for headless/cron use the exported
+file instead).
+
+**Exported cookie file:**
+
+```sh
+yt-dlp --cookies /path/to/cookies.txt ...
+```
+
+Netscape format, **tab-separated** (export with a browser extension like
+"Get cookies.txt LOCALLY"; hand-pasted space-separated lines are silently
+dropped by the parser). Must include the `.yandex.ru` `Session_id`
+cookie — it covers `api.music.yandex.ru` automatically.
+
+**The silent failure mode:** with a stale/missing session the API
+returns `smart_preview` streams for *every* quality level — no error,
+just ~13–30 s files. Verify results with
+`ffprobe -v error -show_entries format=duration file`.
+
 ## Usage
 
 ```sh
-# cookies: Netscape-format file exported from a logged-in browser session
 yt-dlp --cookies ~/Music/NFSMW/.cookies.txt \
   -o '%(playlist_index)02d - %(artist)s - %(title)s.%(ext)s' \
   'https://music.yandex.ru/playlists/<uuid>'
