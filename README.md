@@ -138,27 +138,79 @@ bump by hand. PyPI versions are immutable: one tag = one release, and a
 broken release gets a new date, not a re-upload. Release notes live in
 GitHub Releases.
 
-## Publishing (maintainers)
+## CI/CD & releases
 
-1. Commit the changes to `master`.
+### Pipeline
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10 + 3.14 matrix — installs the latest yt-dlp and the plugin, runs `tests/test_sign.py` and `tools/check_install.py`. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
+| `.github/workflows/publish.yml` | GitHub **Release published**, or manual dispatch (Actions → *Publish to PyPI* → *Run workflow*; optional `tag` input, defaults to the latest tag on the branch) | **build** job: resolves the version (release tag → dispatch input → latest tag), validates the CalVer format *and* that it is a real calendar date, injects it into `pyproject.toml`, builds sdist + wheel, uploads the artifact. **publish** job: uploads to PyPI (see below). |
+
+### How the PyPI upload is authenticated — Trusted Publishing (OIDC)
+
+No API token is stored anywhere. PyPI is configured to trust *this repo's
+`publish.yml` workflow running in the `pypi` environment*; at publish
+time GitHub presents a short-lived OIDC token, PyPI verifies it and mints
+a 15-minute API token that is used for the upload. The workflow declares
+`environment: pypi` + `permissions: id-token: write`, and
+`skip-existing: true` makes re-runs idempotent (PyPI versions are
+immutable, so re-uploading the same version would otherwise fail).
+
+One-time setup (done 2026-09-16):
+
+* GitHub → repo **Settings → Environments** → environment **`pypi`**
+* PyPI → account → **Publishing** → *pending* GitHub publisher: owner
+  `fgsfds1`, repo `yt-dlp-yandex-music-plugin`, workflow `publish.yml`,
+  environment `pypi`, project name `yt-dlp-yandex-music` (the project was
+  created automatically on first publish)
+
+If the repo is ever moved/renamed, or the workflow file is renamed,
+re-register the publisher at PyPI → account → Publishing.
+
+### Release process
+
+1. Commit the changes to `master` (wait for `Tests` to go green).
 2. Tag the commit with the CalVer version (no `v` prefix):
-   `git tag 2026.09.16 && git push origin 2026.09.16`
-3. On GitHub: **Releases → Create a new release** → pick the tag →
-   write notes → **Publish release**. (Tick *pre-release* for `rcN` tags.)
-4. The `Publish to PyPI` workflow builds sdist+wheel and uploads them via
-   PyPI **Trusted Publishing** (OIDC — no API token in the repo).
 
-One-time setup (do once, before the first release):
+   ```sh
+   git tag 2026.09.16 && git push origin 2026.09.16
+   ```
 
-1. GitHub → repo **Settings → Environments → New environment: `pypi`**
-2. PyPI → your account → **Publishing** → add a *pending* GitHub
-   publisher: owner `fgsfds1`, repo `yt-dlp-yandex-music-plugin`,
-   workflow `publish.yml`, environment `pypi`, project name
-   `yt-dlp-yandex-music`. The project is created automatically on first
-   publish (the name is not reserved until then).
+3. Create and **publish** a GitHub Release for that tag (the *published*
+   event is the trigger):
 
-If you ever move the repo or rename the workflow, re-register the
-publisher at PyPI → account → Publishing.
+   ```sh
+   gh release create 2026.09.16 --title "2026.09.16" --notes "..."
+   ```
+
+   or GitHub UI: **Releases → Create a new release → pick tag → notes →
+   Publish release**.
+4. Watch Actions → **Publish to PyPI**.
+5. Verify: <https://pypi.org/project/yt-dlp-yandex-music/> shows the new
+   version, and in a fresh venv:
+
+   ```sh
+   python3 -m venv /tmp/ymtest && /tmp/ymtest/bin/pip install yt-dlp-yandex-music
+   /tmp/ymtest/bin/python tools/check_install.py   # both lines OK
+   ```
+
+### Version edge cases
+
+* **Same-day fix:** tag `2026.09.16.1` — a new release, not a re-upload.
+* **Pre-release:** tag `2026.09.16rc1` and tick *Set as pre-release* on
+  the GitHub Release. Note that `pip install` skips pre-releases unless
+  given `--pre`.
+* **Broken release:** PyPI versions are immutable — cut a new version
+  (`.1` suffix or a new date). You *can* delete a version as the project
+  owner (PyPI → project → release → delete), but a new version is cleaner.
+* **Re-run / re-publish:** Actions → *Publish to PyPI* → *Run workflow*
+  (optionally with a `tag` input), or re-run the release run —
+  `skip-existing` makes this idempotent.
+* **What CI does not test:** live downloads need Yandex session cookies,
+  which are not a CI secret. `tests/test_sign.py` pins the signing
+  algorithm against captured live vectors, and the key-rotation path is
+  smoke-tested manually (see QUICKSTART troubleshooting).
 
 ## Tests
 
@@ -168,15 +220,16 @@ python3 tests/test_sign.py
 
 Verifies the signing algorithm against signatures captured from live web
 app traffic (2026-08-17), including the codecs-without-commas gotcha.
-
-CI runs these on every push/PR (`.github/workflows/tests.yml`), on
-Python 3.10–3.14, plus a packaging build check.
+`tools/check_install.py` verifies an installed plugin. Both run in CI on
+every push/PR — see [CI/CD & releases](#cicd--releases).
 
 ## Layout
 
 ```
 QUICKSTART.md                             3-step how-to (start here)
 yt_dlp_plugins/extractor/yandex_music_v2.py   the plugin
+.github/workflows/tests.yml                 CI: tests + packaging build
+.github/workflows/publish.yml               CI: CalVer tag → PyPI (OIDC)
 tools/check_install.py                      verify the plugin is installed
 tools/extract_secret_key.py                   re-extract the HMAC key
 tools/standalone_download.py                  yt-dlp-free downloader + M3U
