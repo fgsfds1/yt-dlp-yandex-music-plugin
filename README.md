@@ -121,6 +121,7 @@ just ~13–30 s files. Verify results with
 ```sh
 yt-dlp --cookies ~/Music/NFSMW/.cookies.txt \
   -o '%(playlist_index)02d - %(artist)s - %(title)s.%(ext)s' \
+  --embed-metadata --embed-thumbnail \
   'https://music.yandex.ru/playlists/<uuid>'
 
 # single track
@@ -137,6 +138,19 @@ yt-dlp --cookies cookies.txt \
 Filenames containing non-ASCII (e.g. Cyrillic artist names) are **not**
 transliterated by yt-dlp — post-process if you need ASCII-only names
 (`tools/standalone_download.py` does it for you).
+
+### Metadata
+
+Tagging is opt-in via yt-dlp's own flags (`--embed-metadata`,
+`--embed-thumbnail` — both off by default). With them, files get:
+title, artist, album, album artist, track/disc numbers, release year,
+source URL, and the 1000×1000 cover art. Notes:
+
+* **Featured artists** — the API has no structured feat. field; credits
+  live in the track title (e.g. "… (feat. …)"), so they end up in the
+  title tag.
+* **Genre** — not tagged: the API only exposes machine codes
+  (`ruspop`, …), no display names.
 
 ## Standalone downloader (no yt-dlp)
 

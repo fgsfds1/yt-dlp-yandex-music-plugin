@@ -350,15 +350,34 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
         codec = di.get('codec') or 'mp3'
         ext = 'flac' if codec == 'flac' else 'mp3'
         artists = [a.get('name') for a in meta.get('artists', []) if a.get('name')]
-        album = meta.get('album') or {}
+        # The API returns a *list* of albums (a track may appear on several
+        # compilations); the first entry is the primary one.
+        albums = meta.get('albums') or []
+        album = albums[0] if albums and isinstance(albums[0], dict) else {}
+        position = album.get('trackPosition') or {}
+        album_artists = [a.get('name') for a in album.get('artists', []) if a.get('name')]
+        cover = meta.get('coverUri') or album.get('coverUri') or ''
+        if cover and not cover.startswith('http'):
+            cover = f'https://{cover}'
+        # '%%' is Yandex's size placeholder; 1000x1000 is the largest served
+        thumbnail = cover.replace('%%', '1000x1000') if '%%' in cover else (cover or None)
+        year = album.get('year')
+        release = f'{year:04d}0101' if isinstance(year, int) else None
 
         return {
             'id': str(track_id),
             'title': meta.get('title'),
             'artist': ', '.join(artists) or None,
-            'album': album.get('title') if isinstance(album, dict) else None,
-            'album_id': str(album.get('id')) if isinstance(album, dict) and album.get('id') else None,
-            'track_number': int_or_none(meta.get('numberInSet')),
+            'album': album.get('title') or None,
+            'album_id': str(album['id']) if album.get('id') else None,
+            'album_artist': ', '.join(album_artists) or None,
+            'track_number': int_or_none(position.get('index')),
+            'track_total': int_or_none(album.get('trackCount')),
+            'disc_number': int_or_none(position.get('volume')),
+            'date': release,
+            # yt-dlp's metadata postprocessor reads upload_date, not date
+            'upload_date': release,
+            'thumbnail': thumbnail,
             'duration': float_or_none(meta.get('durationMs'), 1000),
             'formats': [{
                 'url': di['url'],

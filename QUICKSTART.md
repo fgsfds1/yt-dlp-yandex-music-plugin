@@ -70,11 +70,16 @@ yt-dlp --plugin-dirs <repo>/.. ...   # see step 2
 ```sh
 yt-dlp --cookies /path/to/cookies.txt \
   -o '%(playlist_index)02d - %(artist)s - %(title)s.%(ext)s' \
+  --embed-metadata --embed-thumbnail \
   'https://music.yandex.ru/playlists/<uuid>'
 ```
 
 That's it. Notes:
 
+* **Metadata/cover art:** `--embed-metadata --embed-thumbnail` are
+  optional yt-dlp flags (off by default) — they tag title, artist,
+  album, album artist, track/disc numbers, year, and embed the 1000×1000
+  cover
 * **Single track:** `yt-dlp --cookies cookies.txt 'https://music.yandex.ru/album/<albumId>/track/<trackId>'`
   (bare `https://music.yandex.ru/track/<trackId>` works too)
 * **Only some tracks:** add `-I 1-5` (first five), `-I 3` (one), `-I 10-20` (range)
