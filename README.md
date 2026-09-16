@@ -24,6 +24,17 @@ reverse-engineered the current web API and replaces the extractor.
   silently returns `smart_preview` streams — downloads "succeed" but
   files are ~13–30 s.
 
+### Available qualities
+
+The API has no "what qualities does this track have" metadata — the
+plugin requests the best level and takes what the server serves. Valid
+levels are `lossless` / `nq` / `lq`; the server falls back to the best
+available. In practice (~1,700 tracks probed, 2026-09): most tracks are
+**MP3 320 kbps**, a few are **MP3 192 kbps only**, and **FLAC is not
+offered** for many accounts (the web UI has no FLAC badge or setting
+either) — so expect MP3. The plugin's `lossless → nq` fallback covers
+the 192-only tracks. Details: `research/api-notes.md`.
+
 ## Install
 
 **Option A — PyPI (recommended):**
