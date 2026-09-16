@@ -3,14 +3,30 @@
 Goal: get audio files from `music.yandex.ru` with `yt-dlp`.
 ~2 minutes. Everything else in this repo is optional.
 
+> Unofficial plugin, vibecoded with AI assistance, no ban guarantee —
+> see the [Disclaimer](README.md#disclaimer) in the README.
+
 ## 0. What you need
 
 * `yt-dlp` (any recent version — the plugin does the work, not yt-dlp)
 * `ffmpeg` (only if you want to convert/re-mux)
-* A Netscape-format cookie file from a logged-in Yandex Music browser
-  session (browser extension "Get cookies.txt LOCALLY" or similar).
-  The cookies must include the `.yandex.ru`-domain session cookies
-  (they cover `api.music.yandex.ru` automatically).
+* Cookies from a logged-in Yandex Music browser session. Two options:
+  * **Native (no export needed):** `--cookies-from-browser` with a profile
+    path, e.g. for the Helium browser (KDE, verified 2026-08):
+    `yt-dlp --cookies-from-browser chromium:~/.config/net.imput.helium/Default ...`
+    Helium stores its cookie-encryption key in KWallet as *"Chromium Safe
+    Storage"*, so the browser name must be `chromium` (not `chrome`).
+    Requires a running KDE session (D-Bus + `kwallet-query` from the
+    `kwallet` package).
+  * **Exported file:** Netscape-format `cookies.txt` (browser extension
+    "Get cookies.txt LOCALLY" or similar). Must include the `.yandex.ru`
+    session cookies (they cover `api.music.yandex.ru` automatically) — the
+    critical one is `Session_id`. The file must be the extension's
+    **tab-separated** export; hand-pasted space-separated lines are
+    silently dropped by the parser (only a few cookies survive, and the
+    session is lost).
+* A paid Yandex Music subscription on that account (free/expired sessions
+  only get preview streams — see troubleshooting).
 
 ## 1. Install the plugin (once)
 
@@ -67,6 +83,7 @@ ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 file.mp3
 
 | Symptom | Fix |
 |---|---|
+| Download "succeeds" but the file is only ~13–30 s (e.g. 13.5 s of a 5-min track) | Stale/invalid session: the API returns `smart_preview` streams for **every** quality level, so there is no error. Re-export cookies from a logged-in browser (must include `.yandex.ru` `Session_id`). Verify with `ffprobe -v error -show_entries format=duration file`. |
 | `HTTP 403 ... "not-allowed"` | The frontend signing key rotated. Run `python3 tools/extract_secret_key.py --check` and update `_SECRET_KEY` in the plugin if it reports MISMATCH. |
 | `playlist data not found in page` | Playlist is private/deleted, or cookies are stale — re-export them. |
 | `not available` for a track | Track is geo/subscription-blocked for your account. |

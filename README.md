@@ -19,7 +19,11 @@ reverse-engineered the current web API and replaces the extractor.
 * Downloads the best available audio: FLAC where the server offers it,
   otherwise MP3 320 kbps (falls back to MP3 192). Unencrypted `raw`
   transport — no client-side decryption.
-* Requires a logged-in account: pass your cookies with `--cookies`.
+* Requires a logged-in (paid) account: pass your cookies with `--cookies`
+  (Netscape format, tab-separated, must include the `.yandex.ru`
+  `Session_id` cookie). Without a valid session the API silently returns
+  `smart_preview` streams — downloads "succeed" but files are ~13–30 s.
+  See the troubleshooting table in `QUICKSTART.md`.
 
 ## Install
 
@@ -124,12 +128,24 @@ The key is a static app secret hardcoded in the frontend bundle
 unencrypted `strm.yandex.net` URLs (MP3 320 / FLAC) that download without
 cookies. Full details: `research/api-notes.md`.
 
-## Legal / ToS note
+## Disclaimer
 
-This is for downloading content you are entitled to access (your own
-subscriptions, e.g. personal playlist archiving). Respect Yandex Music's
-Terms of Service and applicable law; the built-in extractor's own
-documentation already assumes cookie-based personal use.
+* **Vibecoded:** this plugin was written with heavy AI assistance
+  ("vibecoded"). It works for its author, but the code is not audited,
+  not reviewed, and not tested against every edge case. Use with
+  appropriate skepticism.
+* **Use at your own risk — no ban guarantee:** this plugin talks to
+  Yandex Music's *unofficial* web API with your personal session
+  cookies. Nothing here is endorsed by or affiliated with Yandex. The
+  author cannot guarantee that using it will not lead to rate limits,
+  CAPTCHAs, or (in the worst case) restrictions on your Yandex Music
+  account. Keep request volumes reasonable, and if you value the account
+  highly, think twice before hammering it.
+* **Personal use:** this is for downloading content you are entitled to
+  access (your own subscriptions, e.g. personal playlist archiving).
+  Respect Yandex Music's Terms of Service and applicable law; the
+  built-in extractor's own documentation already assumes cookie-based
+  personal use.
 
 ## License
 

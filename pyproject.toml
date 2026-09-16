@@ -19,7 +19,7 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://example.invalid/yt-dlp-yandex-music-v2"
+Homepage = "https://github.com/fgsfds1/yt-dlp-yandex-music-plugin"
 
 [tool.setuptools]
 # namespace package layout expected by yt-dlp's plugin loader:
