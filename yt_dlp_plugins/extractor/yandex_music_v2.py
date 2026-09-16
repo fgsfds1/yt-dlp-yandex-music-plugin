@@ -25,10 +25,17 @@ Note the gotcha: for *signing* the codec list is joined with an empty
 string, while the actual request URL uses commas.
 
 The ``secretKey`` is an app-level secret hardcoded in the music-web
-frontend bundle (module 25079 of the ``8290-*.js`` Next.js chunk). It is
-stable across sessions and users; it only changes when Yandex ships a new
-frontend. If signatures start being rejected (HTTP 403 "not-allowed"),
-re-extract it with ``tools/extract_secret_key.py``.
+frontend bundle. It is stable across sessions and users; it only changes
+when Yandex ships a new frontend. If signatures start being rejected
+(HTTP 403 "not-allowed"), the plugin automatically re-downloads the
+frontend, extracts the new key, and retries. A refreshed key is cached in
+the yt-dlp cache dir. You can also pin a key explicitly:
+
+    yt-dlp --extractor-args "yandexmusicv2:hmac_key=<key>" ...
+
+(when the automatic refresh cannot find the key — e.g. the frontend
+layout changed again — extract it with ``tools/extract_secret_key.py``
+and pass it via the option above).
 
 Transport ``raw`` returns unencrypted media URLs on ``strm.yandex.net``
 (no decryption key needed); ``encraw`` returns encrypted URLs plus a
@@ -52,6 +59,7 @@ import re
 import time
 import uuid
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.extractor.yandexmusic import YandexMusicTrackIE as _BuiltinYandexMusicTrackIE
@@ -60,25 +68,152 @@ from yt_dlp.utils import ExtractorError, float_or_none, int_or_none
 __all__ = ['YandexMusicTrackIE', 'YandexMusicV2PlaylistIE']
 
 _API = 'https://api.music.yandex.ru'
-# App-level secret, hardcoded in the music-web frontend bundle
-# (module 25079 of the "8290-*.js" chunk, v4.1520.1). Stable across
-# sessions. See research/api-notes.md and tools/extract_secret_key.py.
+# Fallback app-level secret, hardcoded in the music-web frontend bundle.
+# Current layout (v4.1603.1+): player:{secretKey:{web:"<key>",win32:...,darwin:...,linux:...}}
+# Older layout (v4.1520.1): module 25079 of the "8290-*.js" chunk.
+# Stable across sessions; only changes when Yandex ships a new frontend.
+# See research/api-notes.md and tools/extract_secret_key.py.
 _SECRET_KEY = '7tvSmFbyf5hJnIHhCimDDD'
 _CODECS = 'flac,mp3'
 _TRANSPORT = 'raw'
 _UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36')
+_FRONTEND_HOME = 'https://music.yandex.ru/'
+# extractor-args names to look up a user-provided hmac_key under
+# (--extractor-args "<name>:hmac_key=<key>")
+_KEY_ARG_NAMES = ('yandexmusicv2', 'yandexmusic',
+                  'yandexmusic:track', 'yandexmusicv2:playlist')
+# in-process cache for keys refreshed from the frontend
+_KEY_CACHE = {'key': None, 'fetched_at': 0}
 
 
-def _make_sign(ts, track_id, quality, codecs, transport):
+class _KeyRejected(Exception):
+    """Internal: the API rejected our request signature (403 not-allowed)."""
+
+
+def _make_sign(ts, track_id, quality, codecs, transport, key):
     """Compute the get-file-info request signature.
 
     data = ts + trackId + quality + codecs.join("") + transport
     (codecs are joined WITHOUT commas for signing; the URL uses commas)
     """
     data = f'{ts}{track_id}{quality}{codecs.replace(",", "")}{transport}'
-    digest = hmac.new(_SECRET_KEY.encode(), data.encode(), hashlib.sha256).digest()
+    digest = hmac.new(key.encode(), data.encode(), hashlib.sha256).digest()
     return base64.b64encode(digest).decode().rstrip('=')
+
+
+def _user_key(ie):
+    """Key pinned via --extractor-args "<name>:hmac_key=<key>" (if any)."""
+    args = ie._downloader.params.get('extractor_args') or {}
+    for name in _KEY_ARG_NAMES:
+        value = (args.get(name.lower()) or {}).get('hmac_key')
+        if isinstance(value, (list, tuple)):  # CLI passes a list of values
+            value = value[0] if value else None
+        if value:
+            return value
+    return None
+
+
+def _load_cached_key(ie):
+    """In-memory cache, then yt-dlp's on-disk cache (from a previous refresh)."""
+    if _KEY_CACHE['key']:
+        return _KEY_CACHE['key']
+    data = ie.cache.load('yandex-music-v2', 'hmac-key')
+    key = data.get('key') if isinstance(data, dict) else None
+    if isinstance(key, str) and key:
+        _KEY_CACHE['key'] = key
+        _KEY_CACHE['fetched_at'] = data.get('ts', 0)
+        return key
+    return None
+
+
+def _save_cached_key(ie, key):
+    _KEY_CACHE['key'] = key
+    _KEY_CACHE['fetched_at'] = time.time()
+    ie.cache.store('yandex-music-v2', 'hmac-key',
+                   {'key': key, 'ts': _KEY_CACHE['fetched_at']})
+
+
+def _current_key(ie):
+    """Key resolution: --extractor-args > refreshed cache > hardcoded."""
+    return _user_key(ie) or _load_cached_key(ie) or _SECRET_KEY
+
+
+# Key locations in the frontend bundle, newest layout first:
+#   v4.1603.1+:  player:{secretKey:{web:"KEY",win32:"...",...}}
+#   older:       player:{...,secretKey:"KEY",...}
+_KEY_PATTERNS = (
+    re.compile(r'secretKey\s*:\s*\{\s*web\s*:\s*"([A-Za-z0-9]{8,64})"'),
+    re.compile(r'secretKey\s*:\s*"([A-Za-z0-9]{8,64})"'),
+)
+
+
+def _frontend_chunk_urls(ie, html):
+    """Collect all frontend chunk URLs from the page HTML and the
+    webpack runtime's lazy-chunk map (``a.u``)."""
+    urls = set(re.findall(r'https://[^"\s]+?/static/chunks/[A-Za-z0-9_./()%-]+\.js', html))
+    m = re.search(r'"p":"(https://[^"]+/static/chunks/)"', html)
+    if m:
+        for rel in re.findall(r'static/chunks/([A-Za-z0-9_./()%-]+\.js)', html):
+            urls.add(m.group(1) + rel)
+    for wurl in (u for u in urls if 'webpack-' in u):
+        js = ie._download_webpage(wurl, 'ym-frontend', note=None,
+                                  fatal=False, errnote=False)
+        if not js:
+            continue
+        i = js.find('a.u=')
+        if i == -1:
+            continue
+        j = js.find(',a.', i + 10)
+        seg = js[i:j if j != -1 else i + 6000]
+        base = wurl.rsplit('/static/chunks/', 1)[0] + '/static/chunks/'
+        for name in re.findall(r'"(static/chunks/[^"]+\.js)"', seg):
+            urls.add(base + name)
+        tables = re.findall(r'\(\{([^}]+)\}\)\[e\]', seg)
+        if len(tables) >= 2:
+            t_prefix = dict(re.findall(r'(\d+):"([a-f0-9]+)"', tables[-2]))
+            t_suffix = dict(re.findall(r'(\d+):"([a-f0-9]+)"', tables[-1]))
+            for cid, suffix in t_suffix.items():
+                urls.add(f'{base}{t_prefix.get(cid, cid)}.{suffix}.js')
+        break
+    return urls
+
+
+def _fetch_key_from_frontend(ie):
+    """Download the current music-web frontend and extract the signing key.
+
+    Returns the key, or None if it could not be found (layout change).
+    """
+    html = ie._download_webpage(
+        _FRONTEND_HOME, 'ym-frontend',
+        note='Yandex Music: downloading frontend to refresh signing key',
+        fatal=False, errnote=False)
+    if not html:
+        return None
+    urls = _frontend_chunk_urls(ie, html)
+    if not urls:
+        return None
+
+    def _get(u):
+        try:
+            return ie._download_webpage(u, 'ym-frontend', note=None,
+                                        fatal=False, errnote=False)
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_get, u) for u in urls]
+        for fut in futures:
+            js = fut.result()
+            if not js:
+                continue
+            for pat in _KEY_PATTERNS:
+                m = pat.search(js)
+                if m:
+                    return m.group(1)
+        for fut in futures:  # let in-flight downloads finish
+            fut.result()
+    return None
 
 
 def _api_headers():
@@ -116,7 +251,7 @@ def _get_track_meta(ie, track_id):
 
 def _get_download_info(ie, track_id, quality):
     ts = str(int(time.time()))
-    sign = _make_sign(ts, track_id, quality, _CODECS, _TRANSPORT)
+    sign = _make_sign(ts, track_id, quality, _CODECS, _TRANSPORT, _current_key(ie))
     url = (f'{_API}/get-file-info?ts={ts}&trackId={track_id}&quality={quality}'
            f'&codecs={urllib.parse.quote(_CODECS)}'
            f'&transports={_TRANSPORT}&sign={urllib.parse.quote(sign)}')
@@ -124,7 +259,29 @@ def _get_download_info(ie, track_id, quality):
         url, track_id,
         note=f'Yandex Music: requesting stream URL for track {track_id} ({quality})',
         headers=_api_headers(),
-        errnote=f'Yandex Music: failed to get stream URL for track {track_id} ({quality})')
+        errnote=f'Yandex Music: failed to get stream URL for track {track_id} ({quality})',
+        expected_status=(403,))
+    if not isinstance(info, (dict, list)):
+        # non-JSON 403 error response — read the body
+        try:
+            body = info.read().decode('utf-8', 'replace')
+        except Exception:
+            body = ''
+        if 'not-allowed' in body:
+            raise _KeyRejected() from None
+        raise ExtractorError(
+            f'Yandex Music: unexpected 403 response: {body[:200] or "(empty)"}',
+            expected=True)
+    # a rejected signature is reported as a JSON error object
+    # ({"name": "track-download-info-error", "message": "not-allowed", ...},
+    # possibly wrapped in a "result" key)
+    err = info.get('result') if isinstance(info.get('result'), dict) else info
+    if err.get('name') == 'track-download-info-error':
+        if err.get('message') == 'not-allowed':
+            raise _KeyRejected() from None
+        raise ExtractorError(
+            f'Yandex Music: {err.get("message") or "download info error"}',
+            expected=True)
     di = info.get('downloadInfo') if isinstance(info, dict) else None
     if not di or not di.get('url'):
         raise ExtractorError('Yandex Music: no download URL in response')
@@ -149,6 +306,32 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
             try:
                 di = _get_download_info(self, track_id, quality)
                 break
+            except _KeyRejected:
+                if _user_key(self):
+                    raise ExtractorError(
+                        'Yandex Music: request signature rejected (403 '
+                        'not-allowed): the pinned hmac_key is out of date. '
+                        'Run tools/extract_secret_key.py for the current key, '
+                        'or drop the --extractor-args override to let the '
+                        'plugin refresh automatically', expected=True)
+                old_key = _current_key(self)
+                new_key = _fetch_key_from_frontend(self)
+                if new_key and new_key != old_key:
+                    _save_cached_key(self, new_key)
+                    self.report_warning(
+                        f'Yandex Music: signing key rejected, refreshed to '
+                        f'{new_key!r} (frontend changed). Pass '
+                        f'--extractor-args "yandexmusicv2:hmac_key={new_key}" '
+                        f'to skip the auto-refresh')
+                    di = _get_download_info(self, track_id, quality)
+                    break
+                raise ExtractorError(
+                    'Yandex Music: request signature rejected (403 not-allowed) '
+                    'and the signing key could not be refreshed automatically '
+                    '(frontend layout may have changed). Extract the key with '
+                    'tools/extract_secret_key.py and pass it via '
+                    '--extractor-args "yandexmusicv2:hmac_key=<key>"',
+                    expected=True)
             except ExtractorError:
                 if quality == 'nq':
                     raise

@@ -84,7 +84,7 @@ ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 file.mp3
 | Symptom | Fix |
 |---|---|
 | Download "succeeds" but the file is only ~13–30 s (e.g. 13.5 s of a 5-min track) | Stale/invalid session: the API returns `smart_preview` streams for **every** quality level, so there is no error. Re-export cookies from a logged-in browser (must include `.yandex.ru` `Session_id`). Verify with `ffprobe -v error -show_entries format=duration file`. |
-| `HTTP 403 ... "not-allowed"` | The frontend signing key rotated. Run `python3 tools/extract_secret_key.py --check` and update `_SECRET_KEY` in the plugin if it reports MISMATCH. |
+| `HTTP 403 ... "not-allowed"` | The frontend signing key rotated. The plugin auto-refreshes it from the frontend on the next request. If it can't (layout change), run `python3 tools/extract_secret_key.py` and pass the key via `--extractor-args "yandexmusicv2:hmac_key=<key>"`. |
 | `playlist data not found in page` | Playlist is private/deleted, or cookies are stale — re-export them. |
 | `not available` for a track | Track is geo/subscription-blocked for your account. |
 | Cyrillic in filenames | yt-dlp doesn't transliterate; use `tools/standalone_download.py` (does it, plus writes an M3U). |

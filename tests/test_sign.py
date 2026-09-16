@@ -78,7 +78,7 @@ def test_plugin_matches():
         return
     assert mod._SECRET_KEY == SECRET_KEY, 'plugin key out of sync'
     for ts, tid, q, codecs, tr, expected in VECTORS:
-        assert mod._make_sign(ts, tid, q, codecs, tr) == expected
+        assert mod._make_sign(ts, tid, q, codecs, tr, SECRET_KEY) == expected
     print('  ok: plugin _make_sign matches reference')
 
 

@@ -3,6 +3,12 @@
 Extract the current Yandex Music web frontend signing key.
 
 The key is an app-level secret hardcoded in the music-web frontend bundle.
+
+In frontend v4.1603.1+ the layout is a per-platform config object:
+
+    player:{secretKey:{web:"7tvSmFbyf5hJnIHhCimDDD",
+                       win32:"...",darwin:"...",linux:"..."},...}
+
 In frontend v4.1520.1 the layout is:
 
 * a config module (e.g. 52708 in chunk 2708-*.js / 35616 in 5616-*.js)
@@ -150,6 +156,15 @@ def fallback_key_scan(js):
     return found
 
 
+# key locations in the bundle, newest layout first:
+#   v4.1603.1+:  player:{secretKey:{web:"KEY",win32:"...",...}}
+#   older:       player:{...,secretKey:"KEY",...}
+KEY_PATTERNS = (
+    re.compile(r'secretKey\s*:\s*\{\s*web\s*:\s*"([A-Za-z0-9]{8,64})"'),
+    re.compile(r'secretKey\s*:\s*"([A-Za-z0-9]{8,64})"'),
+)
+
+
 def main():
     args = sys.argv[1:]
     check = '--check' in args
@@ -171,25 +186,39 @@ def main():
         results = list(pool.map(_get, urls))
     chunks = [(u, js) for u, js in results if js]
 
-    # pass 1: consumer chain  secretKey:(0,VAR.E)()  ->  VAR=o(ID)  -> module ID
-    imported_ids = set()
-    for url, js in chunks:
-        ids = find_consumer_imports(js)
-        if ids:
-            print(f'  consumer in {url.rsplit("/", 1)[-1]} imports modules {sorted(ids)}',
-                  file=sys.stderr)
-            imported_ids |= ids
-
+    # pass 0: literal key in the player config (v4.1603.1+ per-platform
+    # object, or an older plain literal)
     key = None
-    for mod_id in sorted(imported_ids):
-        for url, js in chunks:
-            key = extract_key_from_module(js, mod_id)
-            if key:
-                print(f'  key found in module {mod_id} ({url.rsplit("/", 1)[-1]})',
+    for url, js in chunks:
+        for pat in KEY_PATTERNS:
+            m = pat.search(js)
+            if m:
+                key = m.group(1)
+                print(f'  key found via config literal ({url.rsplit("/", 1)[-1]})',
                       file=sys.stderr)
                 break
         if key:
             break
+
+    # pass 1: consumer chain  secretKey:(0,VAR.E)()  ->  VAR=o(ID)  -> module ID
+    imported_ids = set()
+    if not key:
+        for url, js in chunks:
+            ids = find_consumer_imports(js)
+            if ids:
+                print(f'  consumer in {url.rsplit("/", 1)[-1]} imports modules {sorted(ids)}',
+                      file=sys.stderr)
+                imported_ids |= ids
+
+        for mod_id in sorted(imported_ids):
+            for url, js in chunks:
+                key = extract_key_from_module(js, mod_id)
+                if key:
+                    print(f'  key found in module {mod_id} ({url.rsplit("/", 1)[-1]})',
+                          file=sys.stderr)
+                    break
+            if key:
+                break
 
     # pass 2: fallback — distinctive key-module shape, cross-checked against
     # the consumer import ids when available

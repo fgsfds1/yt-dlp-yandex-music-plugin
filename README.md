@@ -64,6 +64,12 @@ yt-dlp --cookies ~/Music/NFSMW/.cookies.txt \
 # single track
 yt-dlp --cookies cookies.txt \
   'https://music.yandex.ru/album/39688866/track/143540328'
+
+# pin the request-signing key (normally not needed — the plugin
+# refreshes it automatically when Yandex rotates it)
+yt-dlp --cookies cookies.txt \
+  --extractor-args "yandexmusicv2:hmac_key=7tvSmFbyf5hJnIHhCimDDD" \
+  'https://music.yandex.ru/album/39688866/track/143540328'
 ```
 
 Filenames containing non-ASCII (e.g. Cyrillic artist names) are **not**
@@ -87,13 +93,21 @@ optionally an M3U (plain paths or Wine `Z:\`-style paths).
 ## If signatures start failing (403 `not-allowed`)
 
 The HMAC key is hardcoded in the web frontend bundle and only changes
-when Yandex ships a new frontend. Re-extract and update:
+when Yandex ships a new frontend. The plugin handles a rotation
+automatically: on a rejected signature it re-downloads the frontend,
+extracts the new key, caches it in the yt-dlp cache dir, and retries.
+
+If the automatic refresh cannot find the key (frontend layout changed
+again), extract it manually and pin it with an extractor-arg:
 
 ```sh
-python3 tools/extract_secret_key.py --check   # prints key, compares with plugin
-# if mismatched: update _SECRET_KEY in
-#   yt_dlp_plugins/extractor/yandex_music_v2.py
+python3 tools/extract_secret_key.py            # prints the current key
+yt-dlp --extractor-args "yandexmusicv2:hmac_key=<key>" ...
 ```
+
+The `hmac_key` extractor-arg also works for testing/overrides and takes
+priority over the auto-refresh. Accepted names: `yandexmusicv2`,
+`yandexmusic`, `yandexmusic:track`, `yandexmusicv2:playlist`.
 
 ## Tests
 
@@ -122,7 +136,8 @@ research/cdp/                                 CDP capture scripts (Node ≥ 22)
 The web player signs `GET api.music.yandex.ru/get-file-info` requests with
 `sign = base64(HMAC-SHA256(key, ts + trackId + quality + codecs.join("") + transport)).rstrip("=")`.
 The key is a static app secret hardcoded in the frontend bundle
-(`7tvSmFbyf5hJnIHhCimDDD` as of v4.1520.1). The gotcha: codecs are joined
+(`7tvSmFbyf5hJnIHhCimDDD` as of v4.1603.1, where it lives in a
+per-platform `player.secretKey` config object). The gotcha: codecs are joined
 **without** commas for signing (commas in the URL). With
 `quality=lossless&codecs=flac,mp3&transports=raw` the server returns
 unencrypted `strm.yandex.net` URLs (MP3 320 / FLAC) that download without
