@@ -33,6 +33,15 @@ VECTORS = [
      'Q0yu13/Laqr6iFPrbTY4r9cVfwPRVm203XN6jsniKM0'),
 ]
 
+# The plugin's own parameter combination (codecs flac,mp3 + transport raw)
+# pinned against the same key. Self-computed (not a live capture) — it pins
+# the plugin's _CODECS/_TRANSPORT constants: a copy-paste drift in either
+# changes this signature.
+PLUGIN_PARAMS_VECTOR = (
+    '1786984334', '138802868', 'nq', 'flac,mp3', 'raw',
+    'yP53IBcSVrvRo1TVvcO88gpOkBRSAjng4Lrd7PbsBkg',
+)
+
 
 def make_sign(ts, track_id, quality, codecs, transport, key=SECRET_KEY):
     data = f'{ts}{track_id}{quality}{codecs.replace(",", "")}{transport}'
@@ -79,7 +88,27 @@ def test_plugin_matches():
     assert mod._SECRET_KEY == SECRET_KEY, 'plugin key out of sync'
     for ts, tid, q, codecs, tr, expected in VECTORS:
         assert mod._make_sign(ts, tid, q, codecs, tr, SECRET_KEY) == expected
-    print('  ok: plugin _make_sign matches reference')
+    # the plugin's actual request parameters must produce the pinned sign
+    ts, tid, q, codecs, tr, expected = PLUGIN_PARAMS_VECTOR
+    assert (mod._CODECS, mod._TRANSPORT) == ('flac,mp3', 'raw'), \
+        'plugin _CODECS/_TRANSPORT drifted from the pinned vector'
+    assert mod._make_sign(ts, tid, q, mod._CODECS, mod._TRANSPORT,
+                          SECRET_KEY) == expected
+    print('  ok: plugin _make_sign matches reference (incl. its own params)')
+
+
+def test_standalone_key_in_sync():
+    """The standalone tool duplicates the key constant — a rotated key
+    would silently break it while the plugin (auto-refresh) keeps working."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'ymstandalone', os.path.join(os.path.dirname(__file__), '..',
+                                     'tools', 'standalone_download.py'))
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    assert tool.SECRET_KEY == SECRET_KEY, \
+        'tools/standalone_download.py key out of sync with the test/plugin key'
+    print('  ok: standalone tool key in sync')
 
 
 def main():
@@ -87,6 +116,7 @@ def main():
     test_vectors()
     test_codecs_comma_gotcha()
     test_plugin_matches()
+    test_standalone_key_in_sync()
     print('all tests passed')
 
 

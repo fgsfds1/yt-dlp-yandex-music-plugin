@@ -31,7 +31,12 @@ TLDs = ['ru', 'kz', 'ua', 'by', 'com']
 TRACK_URL = 'https://music.yandex.ru/album/586554/track/123456789'
 TRACK_URL_BARE = 'https://music.yandex.ru/track/123456789'
 PLAYLIST_URL = 'https://music.yandex.ru/playlists/8edd98ff-3426-4a2c-918a-e03a43f31de0'
+PLAYLIST_PL_URL = 'https://music.yandex.ru/playlists/pl.8edd98ff-3426-4a2c-918a-e03a43f31de0'
+CHART_URL = 'https://music.yandex.ru/playlists/ch.448df3eb-daee-408a-a60a-252259db2f3b'
 LIKED_URL = 'https://music.yandex.ru/playlists/lk.8edd98ff-3426-4a2c-918a-e03a43f31de0'
+USERS_PLAYLIST_URL = 'https://music.yandex.ru/users/s.sofeychuk/playlists/pl.8edd98ff-3426-4a2c-918a-e03a43f31de0'
+USERS_PLAYLIST_LK_URL = 'https://music.yandex.ru/users/s.sofeychuk/playlists/lk.8edd98ff-3426-4a2c-918a-e03a43f31de0'
+USERS_PLAYLIST_KIND_URL = 'https://music.yandex.ru/users/s.sofeychuk/playlists/3'
 ARTIST_URL = 'https://music.yandex.ru/artist/20258331'
 ARTIST_TRACKS_URL = 'https://music.yandex.ru/artist/20258331/tracks'
 ALBUM_URL = 'https://music.yandex.ru/album/586554'
@@ -52,6 +57,7 @@ def test_regex_matching():
         'track': mod.YandexMusicTrackIE,
         'playlist': mod.YandexMusicV2PlaylistIE,
         'liked': mod.YandexMusicV2LikedPlaylistIE,
+        'users_playlist': mod.YandexMusicPlaylistIE,
         'artist': mod.YandexMusicArtistIE,
         'artist_tracks': mod.YandexMusicArtistTracksIE,
         'album': mod.YandexMusicAlbumIE,
@@ -70,16 +76,23 @@ def test_regex_matching():
             [PLAYLIST_URL, LIKED_URL, ARTIST_URL, ARTIST_TRACKS_URL, ALBUM_URL],
         ),
         'playlist': (
-            [PLAYLIST_URL]
+            [PLAYLIST_URL, PLAYLIST_PL_URL, CHART_URL]
             + [f'https://music.yandex.{tld}/playlists/8edd98ff-3426-4a2c-918a-e03a43f31de0'
                for tld in TLDs],
-            [LIKED_URL, TRACK_URL, ARTIST_URL, ALBUM_URL],
+            [LIKED_URL, TRACK_URL, ARTIST_URL, ALBUM_URL, USERS_PLAYLIST_URL],
         ),
         'liked': (
             [LIKED_URL]
             + [f'https://music.yandex.{tld}/playlists/lk.8edd98ff-3426-4a2c-918a-e03a43f31de0'
                for tld in TLDs],
-            [PLAYLIST_URL, TRACK_URL, ARTIST_URL, ALBUM_URL],
+            [PLAYLIST_URL, TRACK_URL, ARTIST_URL, ALBUM_URL, USERS_PLAYLIST_LK_URL],
+        ),
+        'users_playlist': (
+            [USERS_PLAYLIST_URL, USERS_PLAYLIST_LK_URL, USERS_PLAYLIST_KIND_URL,
+             'https://music.yandex.ru/users/s.sofeychuk/playlists/1003']
+            + [f'https://music.yandex.{tld}/users/s.sofeychuk/playlists/3'
+               for tld in TLDs],
+            [LIKED_URL, PLAYLIST_URL, CHART_URL, TRACK_URL, ARTIST_URL, ALBUM_URL],
         ),
         'artist': (
             [ARTIST_URL]
@@ -110,12 +123,18 @@ def test_regex_matching():
         ('album', ALBUM_URL + '?utm_source=web&utm_medium=copy_link'),
         ('artist', ARTIST_URL + '?utm_source=web'),
         ('liked', LIKED_URL + '#fragment'),
+        ('playlist', CHART_URL + '?utm_source=web&utm_medium=copy_link'),
+        ('users_playlist', USERS_PLAYLIST_KIND_URL + '?x=1'),
     ]:
         assert matches(name, url), f'{name} should match {url}'
     print('  ok: query strings / fragments do not break matching')
 
     # malformed URLs must not match
     malformed = {
+        'track': ['https://music.yandex.ru/track/abc',
+                  'https://music.yandex.ru/track/',
+                  'https://music.yandex.ru/track/123456789x',
+                  'https://music.yandex.ru/track/123456789/extra'],
         'album': ['https://music.yandex.ru/album/abc',
                   'https://music.yandex.ru/album/',
                   'https://music.yandex.ru/album/586554/extra'],
@@ -125,7 +144,13 @@ def test_regex_matching():
                   'https://music.yandex.ru/playlists/lk.8edd98ff-3426-4a2c-918a-e03a43f31de',
                   'https://music.yandex.ru/playlists/8edd98ff-3426-4a2c-918a-e03a43f31de0'],
         'playlist': ['https://music.yandex.ru/playlists/lk.8edd98ff-3426-4a2c-918a-e03a43f31de0',
-                     'https://music.yandex.ru/playlists/short'],
+                     'https://music.yandex.ru/playlists/short',
+                     'https://music.yandex.ru/playlists/ch.short',
+                     'https://music.yandex.ru/playlists/ch.448df3eb-daee-408a-a60a-252259db2f3b/extra'],
+        'users_playlist': ['https://music.yandex.ru/users/s.sofeychuk/playlists/',
+                           'https://music.yandex.ru/users/s.sofeychuk/playlists/xyz',
+                           'https://music.yandex.ru/users/s.sofeychuk/playlists/lk.notauuid',
+                           'https://music.yandex.ru/users/s.sofeychuk/albums/3'],
     }
     for name, urls in malformed.items():
         for url in urls:
@@ -149,12 +174,10 @@ def test_full_resolver():
     by_name = {cls.IE_NAME: cls for cls in extractors}
 
     # shadowing: the plugin classes must be the ones in the list
-    assert by_name['yandexmusic:track'].__module__.startswith('yt_dlp_plugins'), \
-        'built-in yandexmusic:track was not shadowed by the plugin'
-    assert by_name['yandexmusic:album'].__module__.startswith('yt_dlp_plugins'), \
-        'built-in yandexmusic:album was not shadowed by the plugin'
-    assert by_name['yandexmusic:artist:tracks'].__module__.startswith('yt_dlp_plugins'), \
-        'built-in yandexmusic:artist:tracks was not shadowed by the plugin'
+    for name in ('yandexmusic:track', 'yandexmusic:album',
+                 'yandexmusic:artist:tracks', 'yandexmusic:playlist'):
+        assert by_name[name].__module__.startswith('yt_dlp_plugins'), \
+            f'built-in {name} was not shadowed by the plugin'
     for name in ('yandexmusicv2:playlist', 'yandexmusicv2:liked',
                  'yandexmusicv2:artist'):
         assert name in by_name, f'{name} missing from extractor list'
@@ -164,7 +187,12 @@ def test_full_resolver():
         TRACK_URL: 'yandexmusic:track',
         TRACK_URL_BARE: 'yandexmusic:track',
         PLAYLIST_URL: 'yandexmusicv2:playlist',
+        PLAYLIST_PL_URL: 'yandexmusicv2:playlist',
+        CHART_URL: 'yandexmusicv2:playlist',
         LIKED_URL: 'yandexmusicv2:liked',
+        USERS_PLAYLIST_URL: 'yandexmusic:playlist',
+        USERS_PLAYLIST_LK_URL: 'yandexmusic:playlist',
+        USERS_PLAYLIST_KIND_URL: 'yandexmusic:playlist',
         ARTIST_URL: 'yandexmusicv2:artist',
         ARTIST_TRACKS_URL: 'yandexmusic:artist:tracks',
         ALBUM_URL: 'yandexmusic:album',

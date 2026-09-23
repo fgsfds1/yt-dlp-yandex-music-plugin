@@ -39,11 +39,18 @@ class FakeResponse:
     def __init__(self, headers):
         self.headers = headers
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
 
 class FakeDownloader:
-    def __init__(self, headers=None, exc=None):
+    def __init__(self, headers=None, exc=None, params=None):
         self._headers = headers
         self._exc = exc
+        self.params = params or {}
         self.requests = []
 
     def urlopen(self, req):
@@ -114,6 +121,24 @@ def test_missing_content_length_no_warning():
     print('  ok: missing/lowercase Content-Length handled')
 
 
+def test_preview_check_disabled():
+    mod = load_plugin()
+    for args in (
+        {'yandexmusicv2': {'preview_check': ['off']}},
+        {'yandexmusic': {'track:preview_check': ['off']}},  # CLI per-IE form
+        {'yandexmusic:track': {'preview_check': ['false']}},  # SDK form
+    ):
+        ie = make_ie(mod, FakeDownloader(params={'extractor_args': args}))
+        ie._warn_if_preview_served('306559', META, DI_FULL)
+        assert ie.warnings == []
+        assert ie._downloader.requests == [], 'HEAD must be skipped when disabled'
+    # default (no arg) still checks
+    ie = make_ie(mod, FakeDownloader(headers={'Content-Length': str(PREVIEW_BYTES)}))
+    ie._warn_if_preview_served('306559', META, DI_FULL)
+    assert len(ie.warnings) == 1
+    print('  ok: preview_check=off disables the HEAD check (all arg forms)')
+
+
 def test_head_failure_never_fatal():
     mod = load_plugin()
     for exc in (OSError('boom'),):
@@ -139,6 +164,7 @@ def main():
     test_served_quality_full_no_warning()
     test_short_stream_warns()
     test_missing_content_length_no_warning()
+    test_preview_check_disabled()
     test_head_failure_never_fatal()
     print('all tests passed')
 
