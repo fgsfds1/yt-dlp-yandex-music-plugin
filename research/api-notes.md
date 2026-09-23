@@ -267,6 +267,61 @@ hence `codecs=flac,mp3` + `transport=raw`.
 Scripts: `research/cdp/` (Node.js, no dependencies, Node ≥ 22 for the
 global `WebSocket`).
 
+## Artist / album / liked-playlist endpoints (2026-09-23)
+
+### Artist tracks — `GET /artists/<id>/tracks?page=<n>` (paginated!)
+
+The artist page's "all tracks" list. **This is the one genuinely
+paginated endpoint** of the plugin:
+
+* `perPage` is **fixed at 20** — the `perPage` query parameter is
+  ignored by the server (verified: `?perPage=100` still returns 20).
+* Loop `page=0,1,2,…` until `len(collected) >= pager.total` or a page
+  comes back empty. `pager = {page, perPage: 20, total}`.
+* Track objects are *rich* (unlike playlist entries): `id`, `title`,
+  `durationMs`, `available`, `artists[]`, `albums[]` (each with `id`,
+  `title`, `year`, …) — but the plugin only needs `id` + first
+  `albums[0].id` to build the track URL.
+* `GET /artists/<id>` (artist info) does **not** 404 for a nonexistent
+  artist — it returns 200 with `artist.error: "not-found"`. The tracks
+  endpoint returns 200 with `pager.total: 0` and no `tracks` key.
+* `artist.counts.tracks` (e.g. 273 for AC/DC) counts *all* appearances
+  incl. featured ("alsoAlbums"); the tracks endpoint lists only the
+  primary tracks (127 for AC/DC) — that's what the web app's all-tracks
+  view shows, and what the extractor returns.
+* No duplicates observed in the full list (0 dupes for 127-track
+  AC/DC); the extractor dedupes by track id anyway.
+
+### Album pages — preloaded in the RSC payload (no API needed)
+
+`GET /albums/<id>` returns album metadata **without** tracks, and there
+is no `/albums/<id>/tracks` endpoint (404). The album page embeds the
+full track list in the Next.js RSC payload as `"preloadedAlbum":{…}`:
+
+* regular albums: flat `"tracks": [{"id": …}, …]`
+* large/multi-disc albums (e.g. the 149-track *The Discovery Boxset*):
+  no `tracks` key — instead `"volumes": [[{"id": …}, …], …]` (one
+  array per disc). Flatten in order.
+* `"pager": {"page": 0, "perPage": <N>, "total": <N>}` — in all cases
+  observed `perPage == total`, i.e. the preload is complete (verified
+  with 58- and 149-track albums). The extractor warns if
+  `len(ids) < trackCount`.
+
+### Liked playlist — `https://music.yandex.ru/playlists/lk.<uuid>`
+
+Same page-preload mechanism as shared playlists
+(`"preloadedPlaylistByUuid":{…}`), with `kind: 3` and a
+user-specific `lk.`-prefixed uuid. The preload contains the **complete**
+list (verified: `trackCount` 1515 == `len(tracks)` 1515; the pager's
+`total` 1521 counts original indices incl. since-deleted slots, hence
+the last `originalIndex` 1520 > 1514).
+
+Fallback if a preload ever comes back short: the users API
+`GET /users/<uid>/playlists/<kind>` (uid/kind from the preloaded
+`owner.uid`/`kind`) — it **ignores `page`/`perPage` and always returns
+the full playlist in one response** (verified with 1500+ tracks), so no
+API-side pagination is needed there either.
+
 ## Other observations
 
 * `account/about` → `hasPlus: true` for the test account; lossless/MP3-320

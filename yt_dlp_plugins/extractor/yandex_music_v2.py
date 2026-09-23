@@ -1,9 +1,17 @@
 """
 yt-dlp plugin: Yandex Music (modern API, 2026).
 
-Shadows the broken built-in ``YandexMusicTrackIE`` (which relies on the
-deprecated ``handlers/*.jsx`` endpoints that now return 404) and adds
-support for shared playlist URLs (``https://music.yandex.ru/playlists/<uuid>``).
+Shadows the broken built-in ``YandexMusicTrackIE`` / ``YandexMusicAlbumIE`` /
+``YandexMusicArtistTracksIE`` (which rely on the deprecated
+``handlers/*.jsx`` endpoints that now return 404) and adds support for:
+
+* shared playlist URLs (``https://music.yandex.ru/playlists/<uuid>``)
+* the user's "liked"/favorites playlist
+  (``https://music.yandex.ru/playlists/lk.<uuid>``)
+* artist pages (``https://music.yandex.ru/artist/<id>``) — all of the
+  artist's tracks, via the paginated ``/artists/<id>/tracks`` API
+* album pages (``https://music.yandex.ru/album/<id>``) — all of the
+  album's tracks, from the page's preloaded data
 
 Requires cookies of a logged-in Yandex Music account (``--cookies``).
 
@@ -15,6 +23,13 @@ The current music.yandex.ru web app talks to ``api.music.yandex.ru``:
   values ``trackId`` or ``trackId:albumId``)
 * Stream URLs:     ``GET /get-file-info?ts=&trackId=&quality=&codecs=&transports=&sign=``
 * Playlist (by owner): ``GET /users/<uid>/playlists/<kind>``
+* Artist tracks:   ``GET /artists/<id>/tracks?page=<n>`` (20 per page;
+  the ``perPage`` parameter is ignored by the server)
+
+Album and playlist pages (including the liked playlist) embed their full
+track lists in the Next.js RSC payload (``self.__next_f.push`` strings);
+for very large albums the list is split into per-volume
+(``volumes``) instead of a flat ``tracks`` array.
 
 The ``sign`` query parameter is an HMAC-SHA256 signature:
 
@@ -65,7 +80,14 @@ from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.extractor.yandexmusic import YandexMusicTrackIE as _BuiltinYandexMusicTrackIE
 from yt_dlp.utils import ExtractorError, float_or_none, int_or_none
 
-__all__ = ['YandexMusicTrackIE', 'YandexMusicV2PlaylistIE']
+__all__ = [
+    'YandexMusicTrackIE',
+    'YandexMusicV2PlaylistIE',
+    'YandexMusicV2LikedPlaylistIE',
+    'YandexMusicArtistIE',
+    'YandexMusicArtistTracksIE',
+    'YandexMusicAlbumIE',
+]
 
 _API = 'https://api.music.yandex.ru'
 # Fallback app-level secret, hardcoded in the music-web frontend bundle.
@@ -82,7 +104,10 @@ _FRONTEND_HOME = 'https://music.yandex.ru/'
 # extractor-args names to look up a user-provided hmac_key under
 # (--extractor-args "<name>:hmac_key=<key>")
 _KEY_ARG_NAMES = ('yandexmusicv2', 'yandexmusic',
-                  'yandexmusic:track', 'yandexmusicv2:playlist')
+                  'yandexmusic:track', 'yandexmusic:album',
+                  'yandexmusic:artist:tracks',
+                  'yandexmusicv2:playlist', 'yandexmusicv2:liked',
+                  'yandexmusicv2:artist', 'yandexmusicv2:album')
 # in-process cache for keys refreshed from the frontend
 _KEY_CACHE = {'key': None, 'fetched_at': 0}
 
@@ -389,6 +414,40 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
         }
 
 
+def _rsc_payload(webpage):
+    """Join the Next.js RSC payload chunks (``self.__next_f.push`` strings).
+
+    Each push argument is a JSON-encoded string fragment; decoding and
+    concatenating them reconstructs the full flight payload.
+    """
+    chunks = re.findall(
+        r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', webpage)
+    return ''.join(json.loads('"' + c + '"') for c in chunks)
+
+
+def _preloaded_object(payload, key):
+    """Decode the JSON object stored under ``"key":`` in the RSC payload.
+
+    Returns None if the key is missing or its value is not an object
+    (e.g. ``null`` for a not-found page).
+    """
+    i = payload.find(f'"{key}":')
+    if i == -1:
+        return None
+    j = i + len(key) + 3  # skip past '"key":'
+    while j < len(payload) and payload[j] in ' \t':
+        j += 1
+    if payload[j] != '{':
+        return None
+    # raw_decode: unlike manual brace counting, it handles {/} inside
+    # JSON string values (playlist descriptions, track titles, ...)
+    try:
+        data, _ = json.JSONDecoder().raw_decode(payload, j)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 class YandexMusicV2PlaylistIE(InfoExtractor):
     """Shared Yandex Music playlist: https://music.yandex.ru/playlists/<uuid>"""
 
@@ -397,22 +456,50 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
 
     def _parse_preloaded_playlist(self, webpage):
         """Extract the preloaded playlist object from the Next.js RSC payload."""
-        chunks = re.findall(
-            r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', webpage)
-        payload = ''.join(json.loads('"' + c + '"') for c in chunks)
-        i = payload.find('"preloadedPlaylistByUuid":')
-        if i == -1:
+        data = _preloaded_object(_rsc_payload(webpage), 'preloadedPlaylistByUuid')
+        if data is None:
             raise ExtractorError(
                 'Yandex Music: playlist data not found in page '
                 '(is the playlist public and are cookies valid?)', expected=True)
-        j = payload.find('{', i)
-        # raw_decode: unlike manual brace counting, it handles {/} inside
-        # JSON string values (playlist descriptions, track titles, ...)
-        try:
-            data, _ = json.JSONDecoder().raw_decode(payload, j)
-        except json.JSONDecodeError:
-            raise ExtractorError('Yandex Music: malformed playlist data')
         return data
+
+    def _fetch_playlist_via_api(self, data):
+        """Fallback: fetch the playlist (incl. full track list) via the users API.
+
+        Used when the page preload is incomplete. The API always returns the
+        whole playlist in one response (``page``/``perPage`` params are
+        ignored by the server, verified with 1500+ track playlists).
+        """
+        uid = data.get('uid') or (data.get('owner') or {}).get('uid')
+        kind = data.get('kind')
+        if not uid or kind is None:
+            return None
+        playlist_id = data.get('playlistUuid') or 'playlist'
+        try:
+            return self._download_json(
+                f'{_API}/users/{uid}/playlists/{kind}', playlist_id,
+                note='Yandex Music: downloading playlist track list (API fallback)',
+                query={'resumeStream': 'false', 'richTracks': 'false'},
+                headers=_api_headers(),
+                errnote='Yandex Music: failed to download playlist track list')
+        except ExtractorError:
+            return None
+
+    def _playlist_entries(self, tracks):
+        entries = []
+        for t in tracks or []:
+            if not isinstance(t, dict):
+                continue
+            track_id = t.get('id')
+            album_id = t.get('albumId')
+            if not track_id:
+                continue
+            track_url = (f'https://music.yandex.ru/album/{album_id}/track/{track_id}'
+                         if album_id
+                         else f'https://music.yandex.ru/track/{track_id}')
+            entries.append(self.url_result(
+                track_url, ie_key=YandexMusicTrackIE.ie_key()))
+        return entries
 
     def _real_extract(self, url):
         playlist_uuid = self._match_id(url)
@@ -425,17 +512,24 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
             raise ExtractorError(
                 f'Yandex Music: playlist {playlist_uuid} is not available', expected=True)
 
-        entries = []
-        for t in data.get('tracks', []):
-            track_id = t.get('id')
-            album_id = t.get('albumId')
-            if not track_id:
-                continue
-            track_url = (f'https://music.yandex.ru/album/{album_id}/track/{track_id}'
-                         if album_id
-                         else f'https://music.yandex.ru/track/{track_id}')
-            entries.append(self.url_result(
-                track_url, ie_key=YandexMusicTrackIE.ie_key()))
+        tracks = data.get('tracks') or []
+        track_count = data.get('trackCount') or len(tracks)
+        if len(tracks) < track_count:
+            # the page preload should contain the full track list (verified
+            # with 1500+ track playlists); if it is short, fall back to the
+            # users API, which always returns the complete list
+            self.report_warning(
+                f'Yandex Music: playlist page only preloaded {len(tracks)} of '
+                f'{track_count} tracks, falling back to the users API')
+            api_data = self._fetch_playlist_via_api(data)
+            if api_data and len(api_data.get('tracks') or []) > len(tracks):
+                tracks = api_data['tracks']
+            elif len(tracks) < track_count:
+                self.report_warning(
+                    f'Yandex Music: only {len(tracks)} of {track_count} '
+                    f'playlist tracks could be retrieved')
+
+        entries = self._playlist_entries(tracks)
 
         return {
             '_type': 'playlist',
@@ -443,5 +537,178 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
             'title': data.get('title'),
             'description': data.get('description'),
             'entries': entries,
-            'playlist_count': data.get('trackCount') or len(entries),
+            'playlist_count': track_count,
+        }
+
+
+class YandexMusicV2LikedPlaylistIE(YandexMusicV2PlaylistIE):
+    """The user's "liked"/favorites playlist:
+    https://music.yandex.ru/playlists/lk.<uuid>
+
+    The page preload contains the full (1500+ track) list; the users-API
+    fallback inherited from the base class covers a paginated/short preload.
+    """
+
+    IE_NAME = 'yandexmusicv2:liked'
+    _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/playlists/lk\.(?P<id>[0-9a-fA-F-]{36})'
+
+
+class YandexMusicArtistIE(InfoExtractor):
+    """All tracks of a Yandex Music artist: https://music.yandex.ru/artist/<id>
+
+    The track list comes from ``GET /artists/<id>/tracks``, which is
+    paginated (20 tracks per page; the ``perPage`` parameter is ignored by
+    the server), so pages are fetched until the pager's ``total`` is reached.
+    """
+
+    IE_NAME = 'yandexmusicv2:artist'
+    _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/artist/(?P<id>\d+)(?:[?#].*)?$'
+    # safety cap against a misbehaving pager (20 tracks/page -> 20k tracks)
+    _MAX_PAGES = 1000
+
+    def _real_extract(self, url):
+        artist_id = self._match_id(url)
+        info = self._download_json(
+            f'{_API}/artists/{artist_id}', artist_id,
+            note='Yandex Music: downloading artist info',
+            headers=_api_headers(),
+            errnote='Yandex Music: failed to download artist info')
+        artist = info.get('artist') or {}
+        # a nonexistent artist is not an HTTP error: 200 with artist.error
+        if artist.get('error') == 'not-found' or not artist.get('name'):
+            raise ExtractorError(
+                f'Yandex Music: artist {artist_id} not found', expected=True)
+
+        entries = []
+        seen = set()
+        total = None
+        page = 0
+        while page < self._MAX_PAGES:
+            data = self._download_json(
+                f'{_API}/artists/{artist_id}/tracks', artist_id,
+                note=f'Yandex Music: downloading artist tracks (page {page})',
+                query={'page': page},
+                headers=_api_headers(),
+                errnote='Yandex Music: failed to download artist tracks')
+            pager = data.get('pager') or {}
+            if pager.get('total') is not None:
+                total = pager['total']
+            tracks = data.get('tracks') or []
+            if not tracks:
+                break
+            new_on_page = 0
+            for t in tracks:
+                if not isinstance(t, dict):
+                    continue
+                track_id = t.get('id')
+                if not track_id or track_id in seen:
+                    continue
+                seen.add(track_id)
+                albums = t.get('albums') or []
+                album_id = (albums[0].get('id')
+                            if albums and isinstance(albums[0], dict) else None)
+                track_url = (f'https://music.yandex.ru/album/{album_id}/track/{track_id}'
+                             if album_id
+                             else f'https://music.yandex.ru/track/{track_id}')
+                entries.append(self.url_result(
+                    track_url, ie_key=YandexMusicTrackIE.ie_key()))
+                new_on_page += 1
+            if new_on_page == 0:
+                break  # exhausted (or the pager ignores `page`)
+            if total is not None and len(entries) >= total:
+                break
+            page += 1
+        if page >= self._MAX_PAGES:
+            self.report_warning(
+                'Yandex Music: stopped after ' + str(self._MAX_PAGES) +
+                ' pages of artist tracks (pager may be misbehaving)')
+
+        cover = artist.get('ogImage') or (artist.get('cover') or {}).get('uri') or ''
+        if cover and not cover.startswith('http'):
+            cover = f'https://{cover}'
+        # '%%' is Yandex's size placeholder; 1000x1000 is the largest served
+        thumbnail = cover.replace('%%', '1000x1000') if '%%' in cover else (cover or None)
+
+        return {
+            '_type': 'playlist',
+            'id': artist_id,
+            'title': artist.get('name'),
+            'thumbnail': thumbnail,
+            'entries': entries,
+            'playlist_count': total if total is not None else len(entries),
+        }
+
+
+class YandexMusicArtistTracksIE(YandexMusicArtistIE):
+    """Shadow for the broken built-in ``yandexmusic:artist:tracks`` extractor
+    (https://music.yandex.ru/artist/<id>/tracks — the "all tracks" subpage).
+    Same implementation as the artist-page extractor.
+    """
+
+    IE_NAME = 'yandexmusic:artist:tracks'
+    _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/artist/(?P<id>\d+)/tracks(?:[?#].*)?$'
+
+
+class YandexMusicAlbumIE(InfoExtractor):
+    """All tracks of a Yandex Music album: https://music.yandex.ru/album/<id>
+
+    Shadows the broken built-in ``yandexmusic:album`` extractor. The track
+    list is taken from the page's preloaded data: a flat ``tracks`` array
+    for regular albums, or a per-volume ``volumes`` array of arrays for
+    large/multi-disc albums (both verified to contain the full list).
+    """
+
+    IE_NAME = 'yandexmusic:album'
+    _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/album/(?P<id>\d+)(?:[?#].*)?$'
+
+    def _real_extract(self, url):
+        album_id = self._match_id(url)
+        webpage = self._download_webpage(
+            url, album_id,
+            note='Yandex Music: downloading album page',
+            errnote='Yandex Music: failed to download album page')
+        data = _preloaded_object(_rsc_payload(webpage), 'preloadedAlbum')
+        if data is None:
+            raise ExtractorError(
+                f'Yandex Music: album {album_id} not found in page '
+                '(does the album exist and are cookies valid?)', expected=True)
+        if not data.get('available', True):
+            raise ExtractorError(
+                f'Yandex Music: album {album_id} is not available', expected=True)
+
+        track_ids = []
+        for t in data.get('tracks') or []:
+            if isinstance(t, dict) and t.get('id'):
+                track_ids.append(t['id'])
+        if not track_ids:
+            for volume in data.get('volumes') or []:
+                for t in volume or []:
+                    if isinstance(t, dict) and t.get('id'):
+                        track_ids.append(t['id'])
+        track_count = data.get('trackCount') or len(track_ids)
+        if len(track_ids) < track_count:
+            self.report_warning(
+                f'Yandex Music: album page only preloaded {len(track_ids)} of '
+                f'{track_count} tracks')
+
+        entries = [
+            self.url_result(
+                f'https://music.yandex.ru/album/{album_id}/track/{track_id}',
+                ie_key=YandexMusicTrackIE.ie_key())
+            for track_id in track_ids
+        ]
+
+        cover = data.get('coverUri') or ''
+        if cover and not cover.startswith('http'):
+            cover = f'https://{cover}'
+        # '%%' is Yandex's size placeholder; 1000x1000 is the largest served
+        thumbnail = cover.replace('%%', '1000x1000') if '%%' in cover else (cover or None)
+
+        return {
+            '_type': 'playlist',
+            'id': album_id,
+            'title': data.get('title'),
+            'thumbnail': thumbnail,
+            'entries': entries,
+            'playlist_count': track_count,
         }

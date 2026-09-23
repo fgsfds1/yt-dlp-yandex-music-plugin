@@ -24,6 +24,8 @@ jobs:
           python -m pip install "yt-dlp>=2024.03.10" .
       - name: Sign-algorithm regression tests
         run: python tests/test_sign.py
+      - name: URL-matching tests
+        run: python tests/test_url_matching.py
       - name: Plugin install check
         run: python tools/check_install.py
 

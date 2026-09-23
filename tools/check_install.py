@@ -7,15 +7,34 @@ yt-dlp the list-extractors path runs before `load_all_plugins()`, so
 plugins are invisible there. This script loads the plugins explicitly
 and checks:
 
-  1. YandexMusicTrackIE is served by the plugin (shadows the broken
-     built-in extractor),
-  2. YandexMusicV2PlaylistIE is present (shared-playlist URL support).
+  1. the shadowed built-ins (track, album, artist:tracks) are served by
+     the plugin,
+  2. the plugin-only extractors (shared playlist, liked playlist,
+     artist page) are present.
 
 Usage:  python3 tools/check_install.py
 Exit:   0 = OK, 1 = plugin missing/broken
 """
 
 import sys
+
+PLUGIN_MODULE = 'yt_dlp_plugins.extractor.yandex_music_v2'
+
+# (IE_NAME, class name, note)
+EXPECTED = [
+    ('yandexmusic:track', 'YandexMusicTrackIE',
+     'shadows broken built-in'),
+    ('yandexmusic:album', 'YandexMusicAlbumIE',
+     'shadows broken built-in'),
+    ('yandexmusic:artist:tracks', 'YandexMusicArtistTracksIE',
+     'shadows broken built-in'),
+    ('yandexmusicv2:playlist', 'YandexMusicV2PlaylistIE',
+     'shared playlists'),
+    ('yandexmusicv2:liked', 'YandexMusicV2LikedPlaylistIE',
+     'liked/favorites playlists'),
+    ('yandexmusicv2:artist', 'YandexMusicArtistIE',
+     'artist pages (all tracks)'),
+]
 
 
 def main():
@@ -28,22 +47,17 @@ def main():
     load_all_plugins()
     from yt_dlp.extractor import gen_extractor_classes
     classes = list(gen_extractor_classes())
+    by_name = {c.IE_NAME: c for c in classes}
 
     ok = True
-    track = [c for c in classes if c.__name__ == 'YandexMusicTrackIE']
-    if track and track[0].__module__ == 'yt_dlp_plugins.extractor.yandex_music_v2':
-        print('OK:  yandexmusic:track      -> plugin (shadows broken built-in)')
-    else:
-        mod = track[0].__module__ if track else 'missing'
-        print(f'FAIL: yandexmusic:track not served by the plugin (module: {mod})')
-        ok = False
-
-    v2 = [c for c in classes if c.__name__ == 'YandexMusicV2PlaylistIE']
-    if v2:
-        print('OK:  yandexmusicv2:playlist -> plugin (shared playlists)')
-    else:
-        print('FAIL: YandexMusicV2PlaylistIE not found (shared-playlist support missing)')
-        ok = False
+    for ie_name, class_name, note in EXPECTED:
+        cls = by_name.get(ie_name)
+        if cls is not None and cls.__module__ == PLUGIN_MODULE:
+            print(f'OK:  {ie_name:<28} -> plugin ({note})')
+        else:
+            mod = f'{cls.__module__}/{cls.__name__}' if cls else 'missing'
+            print(f'FAIL: {ie_name} not served by the plugin (got: {mod})')
+            ok = False
 
     return 0 if ok else 1
 

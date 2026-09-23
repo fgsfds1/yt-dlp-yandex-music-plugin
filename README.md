@@ -16,6 +16,17 @@ reverse-engineered the current web API and replaces the extractor.
   (shadows the broken built-in `YandexMusicTrackIE`).
 * Adds support for **shared playlists**:
   `https://music.yandex.ru/playlists/<uuid>` (not supported by upstream).
+* Adds support for the **"liked"/favorites playlist**:
+  `https://music.yandex.ru/playlists/lk.<uuid>` (tested with 1500+ tracks).
+* Adds support for **artist pages**:
+  `https://music.yandex.ru/artist/<id>` — all of the artist's tracks,
+  fetched via the paginated `GET /artists/<id>/tracks` API (20/page).
+  Also fixes the broken built-in
+  `https://music.yandex.ru/artist/<id>/tracks` sub-route.
+* Adds support for **album pages**:
+  `https://music.yandex.ru/album/<id>` — all of the album's tracks
+  (incl. multi-disc box sets), from the page's preloaded data; shadows
+  the broken built-in `YandexMusicAlbumIE`.
 * Downloads the best available audio: FLAC where the server offers it,
   otherwise MP3 320 kbps (falls back to MP3 192). Unencrypted `raw`
   transport — no client-side decryption.
@@ -70,12 +81,16 @@ cp yt_dlp_plugins/extractor/yandex_music_v2.py \
 All options install into a location yt-dlp scans for the
 `yt_dlp_plugins.extractor` namespace automatically.
 
-Verify (both lines should say OK):
+Verify (all lines should say OK):
 
 ```sh
 python3 tools/check_install.py
-# OK:  yandexmusic:track      -> plugin (shadows broken built-in)
-# OK:  yandexmusicv2:playlist -> plugin (shared playlists)
+# OK:  yandexmusic:track            -> plugin (shadows broken built-in)
+# OK:  yandexmusic:album            -> plugin (shadows broken built-in)
+# OK:  yandexmusic:artist:tracks    -> plugin (shadows broken built-in)
+# OK:  yandexmusicv2:playlist       -> plugin (shared playlists)
+# OK:  yandexmusicv2:liked          -> plugin (liked/favorites playlists)
+# OK:  yandexmusicv2:artist         -> plugin (artist pages (all tracks))
 ```
 
 Note: `yt-dlp --list-extractors` won't show the plugin — yt-dlp handles
@@ -123,6 +138,15 @@ yt-dlp --cookies ~/Music/NFSMW/.cookies.txt \
   -o '%(playlist_index)02d - %(artist)s - %(title)s.%(ext)s' \
   --embed-metadata --embed-thumbnail \
   'https://music.yandex.ru/playlists/<uuid>'
+
+# liked/favorites playlist (playlists/lk.<uuid>)
+yt-dlp --cookies cookies.txt 'https://music.yandex.ru/playlists/lk.<uuid>'
+
+# all tracks of an artist (paginated automatically)
+yt-dlp --cookies cookies.txt 'https://music.yandex.ru/artist/<id>'
+
+# all tracks of an album (incl. multi-disc box sets)
+yt-dlp --cookies cookies.txt 'https://music.yandex.ru/album/<id>'
 
 # single track
 yt-dlp --cookies cookies.txt \
@@ -183,7 +207,9 @@ yt-dlp --extractor-args "yandexmusicv2:hmac_key=<key>" ...
 
 The `hmac_key` extractor-arg also works for testing/overrides and takes
 priority over the auto-refresh. Accepted names: `yandexmusicv2`,
-`yandexmusic`, `yandexmusic:track`, `yandexmusicv2:playlist`.
+`yandexmusic`, `yandexmusic:track`, `yandexmusic:album`,
+`yandexmusic:artist:tracks`, `yandexmusicv2:playlist`,
+`yandexmusicv2:liked`, `yandexmusicv2:artist`, `yandexmusicv2:album`.
 
 ## Versioning
 
@@ -205,7 +231,7 @@ GitHub Releases.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10 + 3.14 matrix — installs the latest yt-dlp and the plugin, runs `tests/test_sign.py` and `tools/check_install.py`. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
+| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10 + 3.14 matrix — installs the latest yt-dlp and the plugin, runs `tests/test_sign.py`, `tests/test_url_matching.py` and `tools/check_install.py`. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
 | `.github/workflows/publish.yml` | GitHub **Release published**, or manual dispatch (Actions → *Publish to PyPI* → *Run workflow*; optional `tag` input, defaults to the latest tag on the branch) | **build** job: resolves the version (release tag → dispatch input → latest tag), validates the CalVer format *and* that it is a real calendar date, injects it into `pyproject.toml`, builds sdist + wheel, uploads the artifact. **publish** job: uploads to PyPI (see below). |
 
 ### How the PyPI upload is authenticated — Trusted Publishing (OIDC)
@@ -276,12 +302,17 @@ re-register the publisher at PyPI → account → Publishing.
 ## Tests
 
 ```sh
-python3 tests/test_sign.py
+python3 tests/test_sign.py           # signing algorithm vs. captured vectors
+python3 tests/test_url_matching.py   # extractor URL matching (per-regex + full resolver)
 ```
 
-Verifies the signing algorithm against signatures captured from live web
-app traffic (2026-08-17), including the codecs-without-commas gotcha.
-`tools/check_install.py` verifies an installed plugin. Both run in CI on
+`tests/test_sign.py` verifies the signing algorithm against signatures
+captured from live web app traffic (2026-08-17), including the
+codecs-without-commas gotcha. `tests/test_url_matching.py` verifies that
+each extractor matches exactly its own URL space (all TLDs, query
+strings, malformed URLs) and that with the plugin loaded yt-dlp resolves
+each URL to the intended extractor (incl. the shadowed built-ins).
+`tools/check_install.py` verifies an installed plugin. All run in CI on
 every push/PR — see [CI/CD & releases](#cicd--releases).
 
 ## Layout
@@ -295,6 +326,7 @@ tools/check_install.py                      verify the plugin is installed
 tools/extract_secret_key.py                   re-extract the HMAC key
 tools/standalone_download.py                  yt-dlp-free downloader + M3U
 tests/test_sign.py                            sign-algorithm regression tests
+tests/test_url_matching.py                    extractor URL-matching tests
 research/api-notes.md                         full API + RE documentation
 research/cdp/                                 CDP capture scripts (Node ≥ 22)
 ```
