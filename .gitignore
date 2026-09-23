@@ -4,3 +4,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.venv/
+venv/
+# exported browser cookies — never commit these
+cookies*.txt
+*.cookiejar

@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=61"]
+# >=77: PEP 639 `license = "MIT"` support
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,13 +13,12 @@ version = "0.0.0"
 description = "yt-dlp plugin: Yandex Music via the modern api.music.yandex.ru (fixes the broken built-in extractor, adds shared-playlist URL support)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "lw" }]
 keywords = ["yt-dlp", "yt-dlp-plugins", "plugin", "yandex-music", "extractor"]
 classifiers = [
     "Environment :: Console",
     "Environment :: Plugins",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Topic :: Multimedia :: Sound/Audio",

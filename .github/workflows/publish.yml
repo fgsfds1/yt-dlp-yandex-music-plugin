@@ -11,6 +11,9 @@
 # Release from that tag and publish it → this workflow runs.
 # Pre-release: mark the GitHub Release as pre-release and use a tag with
 # an rcN suffix (e.g. 2026.09.16rc1).
+# Manual: Actions → Publish to PyPI → Run workflow — the tag input is
+# REQUIRED (a missing tag used to silently resolve to the latest
+# already-published tag and no-op).
 name: Publish to PyPI
 
 on:
@@ -19,18 +22,23 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag to publish (default: latest tag on this branch)"
-        required: false
+        description: "Version tag to publish (CalVer, e.g. 2026.09.16.1)"
+        required: true
         type: string
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           fetch-depth: 0 # tags needed for the git-describe fallback
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.12"
       - name: Resolve version
@@ -55,7 +63,7 @@ jobs:
         run: |
           python -m pip install build
           python -m build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
           name: dist
           path: dist/
@@ -63,15 +71,16 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write # required for Trusted Publishing
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
         with:
           name: dist
           path: dist/
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
         with:
           skip-existing: true # makes workflow re-runs idempotent
