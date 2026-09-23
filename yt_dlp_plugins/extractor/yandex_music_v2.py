@@ -2,12 +2,15 @@
 yt-dlp plugin: Yandex Music (modern API, 2026).
 
 Shadows the broken built-in ``YandexMusicTrackIE`` / ``YandexMusicAlbumIE`` /
-``YandexMusicArtistTracksIE`` (which rely on the deprecated
-``handlers/*.jsx`` endpoints that now return 404) and adds support for:
+``YandexMusicArtistTracksIE`` / ``YandexMusicPlaylistIE`` (which rely on the
+deprecated ``handlers/*.jsx`` endpoints that now return 404) and adds support
+for:
 
 * shared playlist URLs (``https://music.yandex.ru/playlists/<uuid>``)
 * the user's "liked"/favorites playlist
   (``https://music.yandex.ru/playlists/lk.<uuid>``)
+* charts (``https://music.yandex.ru/playlists/ch.<uuid>``)
+* user-playlist URLs (``https://music.yandex.ru/users/<login>/playlists/<id>``)
 * artist pages (``https://music.yandex.ru/artist/<id>``) — all of the
   artist's tracks, via the paginated ``/artists/<id>/tracks`` API
 * album pages (``https://music.yandex.ru/album/<id>``) — all of the
@@ -74,10 +77,14 @@ import re
 import time
 import uuid
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from yt_dlp.extractor.common import InfoExtractor
-from yt_dlp.extractor.yandexmusic import YandexMusicTrackIE as _BuiltinYandexMusicTrackIE
+try:
+    from yt_dlp.extractor.yandexmusic import YandexMusicTrackIE as _BuiltinYandexMusicTrackIE
+except ImportError:  # upstream removed/renamed the built-in: keep going,
+    # the plugin's own extractors still work (only shadowing is lost)
+    _BuiltinYandexMusicTrackIE = InfoExtractor
 from yt_dlp.networking import HEADRequest
 from yt_dlp.utils import ExtractorError, float_or_none, int_or_none
 
@@ -85,6 +92,7 @@ __all__ = [
     'YandexMusicTrackIE',
     'YandexMusicV2PlaylistIE',
     'YandexMusicV2LikedPlaylistIE',
+    'YandexMusicPlaylistIE',
     'YandexMusicArtistIE',
     'YandexMusicArtistTracksIE',
     'YandexMusicAlbumIE',
@@ -102,15 +110,15 @@ _TRANSPORT = 'raw'
 _UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
        '(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36')
 _FRONTEND_HOME = 'https://music.yandex.ru/'
-# extractor-args names to look up a user-provided hmac_key under
-# (--extractor-args "<name>:hmac_key=<key>")
+# extractor-args names to look up user-provided arguments under
+# (--extractor-args "<name>:<arg>=<value>")
 _KEY_ARG_NAMES = ('yandexmusicv2', 'yandexmusic',
                   'yandexmusic:track', 'yandexmusic:album',
-                  'yandexmusic:artist:tracks',
+                  'yandexmusic:artist:tracks', 'yandexmusic:playlist',
                   'yandexmusicv2:playlist', 'yandexmusicv2:liked',
-                  'yandexmusicv2:artist', 'yandexmusicv2:album')
+                  'yandexmusicv2:artist')
 # in-process cache for keys refreshed from the frontend
-_KEY_CACHE = {'key': None, 'fetched_at': 0}
+_KEY_CACHE = {'key': None, 'refresh_failed': False}
 
 
 class _KeyRejected(Exception):
@@ -128,16 +136,32 @@ def _make_sign(ts, track_id, quality, codecs, transport, key):
     return base64.b64encode(digest).decode().rstrip('=')
 
 
-def _user_key(ie):
-    """Key pinned via --extractor-args "<name>:hmac_key=<key>" (if any)."""
+def _extractor_arg(ie, key):
+    """Value of --extractor-args "<name>:<key>" for any accepted name.
+
+    yt-dlp's CLI parser splits on the *first* colon, so
+    ``--extractor-args "yandexmusicv2:liked:hmac_key=K"`` lands as
+    ``{'yandexmusicv2': {'liked:hmac_key': ['K']}}`` — scan for the bare key
+    and the ``<sub>:<key>`` suffix under every accepted top-level name.
+    """
     args = ie._downloader.params.get('extractor_args') or {}
     for name in _KEY_ARG_NAMES:
-        value = (args.get(name.lower()) or {}).get('hmac_key')
-        if isinstance(value, (list, tuple)):  # CLI passes a list of values
-            value = value[0] if value else None
-        if value:
+        sub = args.get(name.lower())
+        if not isinstance(sub, dict):
+            continue
+        for arg_name, value in sub.items():
+            if arg_name != key and not arg_name.endswith(':' + key):
+                continue
+            if isinstance(value, (list, tuple)):  # CLI passes a list of values
+                value = value[0] if value else None
             return value
     return None
+
+
+def _user_key(ie):
+    """Key pinned via --extractor-args "<name>:hmac_key=<key>" (if any)."""
+    key = _extractor_arg(ie, 'hmac_key')
+    return key if isinstance(key, str) and key else None
 
 
 def _load_cached_key(ie):
@@ -148,16 +172,13 @@ def _load_cached_key(ie):
     key = data.get('key') if isinstance(data, dict) else None
     if isinstance(key, str) and key:
         _KEY_CACHE['key'] = key
-        _KEY_CACHE['fetched_at'] = data.get('ts', 0)
         return key
     return None
 
 
 def _save_cached_key(ie, key):
     _KEY_CACHE['key'] = key
-    _KEY_CACHE['fetched_at'] = time.time()
-    ie.cache.store('yandex-music-v2', 'hmac-key',
-                   {'key': key, 'ts': _KEY_CACHE['fetched_at']})
+    ie.cache.store('yandex-music-v2', 'hmac-key', {'key': key})
 
 
 def _current_key(ie):
@@ -227,19 +248,30 @@ def _fetch_key_from_frontend(ie):
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(_get, u) for u in urls]
-        for fut in futures:
+    pool = ThreadPoolExecutor(max_workers=8)
+    futures = [pool.submit(_get, u) for u in urls]
+    key = None
+    try:
+        for fut in as_completed(futures):
             js = fut.result()
             if not js:
                 continue
             for pat in _KEY_PATTERNS:
                 m = pat.search(js)
                 if m:
-                    return m.group(1)
-        for fut in futures:  # let in-flight downloads finish
-            fut.result()
-    return None
+                    key = m.group(1)
+                    break
+            if key:
+                break
+    finally:
+        # don't wait for the remaining chunk downloads (they finish in the
+        # background; the interpreter joins the pool at exit)
+        pool.shutdown(wait=False, cancel_futures=True)
+    if key is None:
+        ie.write_debug(
+            f'Yandex Music: key refresh scanned {len(urls)} frontend chunks, '
+            f'no key pattern matched (layout change?)')
+    return key
 
 
 def _api_headers():
@@ -281,22 +313,30 @@ def _get_download_info(ie, track_id, quality):
     url = (f'{_API}/get-file-info?ts={ts}&trackId={track_id}&quality={quality}'
            f'&codecs={urllib.parse.quote(_CODECS)}'
            f'&transports={_TRANSPORT}&sign={urllib.parse.quote(sign)}')
-    info = ie._download_json(
-        url, track_id,
-        note=f'Yandex Music: requesting stream URL for track {track_id} ({quality})',
-        headers=_api_headers(),
-        errnote=f'Yandex Music: failed to get stream URL for track {track_id} ({quality})',
-        expected_status=(403,))
-    if not isinstance(info, (dict, list)):
-        # non-JSON 403 error response — read the body
+    try:
+        info = ie._download_json(
+            url, track_id,
+            note=f'Yandex Music: requesting stream URL for track {track_id} ({quality})',
+            headers=_api_headers(),
+            errnote=f'Yandex Music: failed to get stream URL for track {track_id} ({quality})',
+            expected_status=(403,))
+    except ExtractorError:
+        # a non-JSON 403 body makes _download_json raise before returning —
+        # re-fetch the raw body to check for a rejected signature
         try:
-            body = info.read().decode('utf-8', 'replace')
+            body = ie._download_webpage(
+                url, track_id, note=None, fatal=False, errnote=False) or ''
         except Exception:
             body = ''
         if 'not-allowed' in body:
             raise _KeyRejected() from None
+        raise
+    if not isinstance(info, dict):
+        # JSON array (or other non-object) 403 body
+        if 'not-allowed' in json.dumps(info):
+            raise _KeyRejected() from None
         raise ExtractorError(
-            f'Yandex Music: unexpected 403 response: {body[:200] or "(empty)"}',
+            f'Yandex Music: unexpected 403 response: {str(info)[:200]}',
             expected=True)
     # a rejected signature is reported as a JSON error object
     # ({"name": "track-download-info-error", "message": "not-allowed", ...},
@@ -314,11 +354,23 @@ def _get_download_info(ie, track_id, quality):
     return di
 
 
+def _normalize_cover(cover):
+    """Normalize a cover URL: protocol-relative (``//…``) and Yandex's
+    ``%%`` size placeholder (1000x1000 is the largest served)."""
+    if not cover:
+        return None
+    if cover.startswith('//'):
+        cover = 'https:' + cover
+    elif not cover.startswith('http'):
+        cover = f'https://{cover}'
+    return cover.replace('%%', '1000x1000') if '%%' in cover else cover
+
+
 class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
     """Yandex Music track via the modern api.music.yandex.ru endpoints."""
 
-    _VALID_URL = (r'^https?://music\.yandex\.(?:ru|kz|ua|by|com)'
-                  r'/(?:album/\d+/)?track/(?P<id>\d+)')
+    _VALID_URL = (r'^https?://music\.yandex\.[a-z.]+'
+                  r'/(?:album/\d+/)?track/(?P<id>\d+)(?:[?#].*)?$')
 
     def _real_extract(self, url):
         track_id = self._match_id(url)
@@ -340,6 +392,17 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                         'Run tools/extract_secret_key.py for the current key, '
                         'or drop the --extractor-args override to let the '
                         'plugin refresh automatically', expected=True)
+                if _KEY_CACHE.get('refresh_failed'):
+                    # the frontend scan already failed earlier in this
+                    # process — don't re-download the whole frontend per track
+                    raise ExtractorError(
+                        'Yandex Music: request signature rejected (403 '
+                        'not-allowed) and the signing key could not be '
+                        'refreshed automatically (an earlier refresh in this '
+                        'run already failed). Extract the key with '
+                        'tools/extract_secret_key.py and pass it via '
+                        '--extractor-args "yandexmusicv2:hmac_key=<key>"',
+                        expected=True)
                 old_key = _current_key(self)
                 new_key = _fetch_key_from_frontend(self)
                 if new_key and new_key != old_key:
@@ -360,11 +423,16 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                             '--extractor-args "yandexmusicv2:hmac_key=<key>"',
                             expected=True) from None
                     break
+                if new_key is None:
+                    _KEY_CACHE['refresh_failed'] = True
+                hint = (' or your system clock is skewed outside the '
+                         'server\'s signature window'
+                         if new_key == old_key else '')
                 raise ExtractorError(
                     'Yandex Music: request signature rejected (403 not-allowed) '
                     'and the signing key could not be refreshed automatically '
-                    '(frontend layout may have changed). Extract the key with '
-                    'tools/extract_secret_key.py and pass it via '
+                    f'(frontend layout may have changed{hint}). Extract the '
+                    'key with tools/extract_secret_key.py and pass it via '
                     '--extractor-args "yandexmusicv2:hmac_key=<key>"',
                     expected=True)
             except ExtractorError:
@@ -384,11 +452,7 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
         album = albums[0] if albums and isinstance(albums[0], dict) else {}
         position = album.get('trackPosition') or {}
         album_artists = [a.get('name') for a in album.get('artists', []) if a.get('name')]
-        cover = meta.get('coverUri') or album.get('coverUri') or ''
-        if cover and not cover.startswith('http'):
-            cover = f'https://{cover}'
-        # '%%' is Yandex's size placeholder; 1000x1000 is the largest served
-        thumbnail = cover.replace('%%', '1000x1000') if '%%' in cover else (cover or None)
+        thumbnail = _normalize_cover(meta.get('coverUri') or album.get('coverUri'))
         year = album.get('year')
         release = f'{year:04d}0101' if isinstance(year, int) else None
 
@@ -428,7 +492,12 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
              duration — estimated from the stream URL's Content-Length
              (HEAD) and the served bitrate.
         Best-effort: network problems here are never fatal.
+
+        Disable with --extractor-args "<name>:preview_check=off" (e.g. for
+        very large playlists where the extra HEAD per track is not worth it).
         """
+        if _extractor_arg(self, 'preview_check') in ('off', 'false', '0'):
+            return
         served = di.get('quality')
         if served in ('preview', 'smart_preview'):
             self.report_warning(
@@ -442,13 +511,13 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
         if not (duration_ms and bitrate and di.get('url')):
             return
         try:
-            resp = self._downloader.urlopen(
-                HEADRequest(di['url'], headers={'User-Agent': _UA}))
-            content_length = 0
-            for k, v in (resp.headers or {}).items():
-                if k.lower() == 'content-length':
-                    content_length = int(v)
-                    break
+            with self._downloader.urlopen(
+                    HEADRequest(di['url'], headers={'User-Agent': _UA})) as resp:
+                content_length = 0
+                for k, v in (resp.headers or {}).items():
+                    if k.lower() == 'content-length':
+                        content_length = int(v)
+                        break
         except Exception:
             return
         if not content_length:
@@ -485,7 +554,7 @@ def _preloaded_object(payload, key):
     j = i + len(key) + 3  # skip past '"key":'
     while j < len(payload) and payload[j] in ' \t':
         j += 1
-    if payload[j] != '{':
+    if j >= len(payload) or payload[j] != '{':
         return None
     # raw_decode: unlike manual brace counting, it handles {/} inside
     # JSON string values (playlist descriptions, track titles, ...)
@@ -497,41 +566,66 @@ def _preloaded_object(payload, key):
 
 
 class YandexMusicV2PlaylistIE(InfoExtractor):
-    """Shared Yandex Music playlist: https://music.yandex.ru/playlists/<uuid>"""
+    """Shared Yandex Music playlist: https://music.yandex.ru/playlists/<uuid>
+
+    Also matches chart playlists (``/playlists/ch.<uuid>`` — kind 1076,
+    preloaded like any playlist).
+    """
 
     IE_NAME = 'yandexmusicv2:playlist'
-    _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/playlists/(?P<id>[0-9a-fA-F-]{36})'
+    _VALID_URL = (r'^https?://music\.yandex\.[a-z.]+/playlists/'
+                  r'(?:(?:pl|ch)\.)?(?P<id>[0-9a-fA-F-]{36})(?:[?#].*)?$')
+    # RSC payload key holding the preloaded playlist object
+    _PRELOAD_KEY = 'preloadedPlaylistByUuid'
 
-    def _parse_preloaded_playlist(self, webpage):
+    def _parse_preloaded_playlist(self, webpage, url):
         """Extract the preloaded playlist object from the Next.js RSC payload."""
-        data = _preloaded_object(_rsc_payload(webpage), 'preloadedPlaylistByUuid')
+        data = _preloaded_object(_rsc_payload(webpage), self._PRELOAD_KEY)
         if data is None:
             raise ExtractorError(
                 'Yandex Music: playlist data not found in page '
                 '(is the playlist public and are cookies valid?)', expected=True)
         return data
 
-    def _fetch_playlist_via_api(self, data):
-        """Fallback: fetch the playlist (incl. full track list) via the users API.
+    def _fetch_playlist_via_api(self, data, expect_uuid=None):
+        """Fallback: fetch the playlist (incl. full track list) via the API.
 
-        Used when the page preload is incomplete. The API always returns the
+        Used when the page preload is incomplete. Both endpoints return the
         whole playlist in one response (``page``/``perPage`` params are
         ignored by the server, verified with 1500+ track playlists).
+
+        ``expect_uuid``: when set, a response whose ``playlistUuid`` does
+        not match is skipped (guards against the users API returning a
+        *different* user's playlist when the uid was guessed from the page).
         """
         uid = data.get('uid') or (data.get('owner') or {}).get('uid')
         kind = data.get('kind')
-        if not uid or kind is None:
-            return None
-        playlist_id = data.get('playlistUuid') or 'playlist'
-        try:
-            return self._download_json(
-                f'{_API}/users/{uid}/playlists/{kind}', playlist_id,
-                note='Yandex Music: downloading playlist track list (API fallback)',
-                query={'resumeStream': 'false', 'richTracks': 'false'},
-                headers=_api_headers(),
-                errnote='Yandex Music: failed to download playlist track list')
-        except ExtractorError:
-            return None
+        playlist_uuid = data.get('playlistUuid')
+        playlist_id = playlist_uuid or 'playlist'
+        urls = []
+        if uid and kind is not None:
+            urls.append(f'{_API}/users/{uid}/playlists/{kind}')
+        if playlist_uuid:
+            urls.append(f'{_API}/playlist/{playlist_uuid}')
+        for url in urls:
+            try:
+                info = self._download_json(
+                    url, playlist_id,
+                    note='Yandex Music: downloading playlist track list (API fallback)',
+                    query={'resumeStream': 'false', 'richTracks': 'false'},
+                    headers=_api_headers(),
+                    errnote='Yandex Music: failed to download playlist track list')
+            except ExtractorError:
+                continue
+            if isinstance(info, dict) and isinstance(info.get('result'), dict):
+                info = info['result']
+            if not (isinstance(info, dict) and info.get('tracks')):
+                continue
+            if (expect_uuid and info.get('playlistUuid')
+                    and info['playlistUuid'] != expect_uuid):
+                continue
+            return info
+        return None
 
     def _playlist_entries(self, tracks):
         entries = []
@@ -555,7 +649,7 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
             url, playlist_uuid,
             note='Yandex Music: downloading playlist page',
             errnote='Yandex Music: failed to download playlist page')
-        data = self._parse_preloaded_playlist(webpage)
+        data = self._parse_preloaded_playlist(webpage, url)
         if not data.get('available', True):
             raise ExtractorError(
                 f'Yandex Music: playlist {playlist_uuid} is not available', expected=True)
@@ -585,7 +679,9 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
             'title': data.get('title'),
             'description': data.get('description'),
             'entries': entries,
-            'playlist_count': track_count,
+            # don't report a count larger than what we actually have (the
+            # progress display would otherwise promise tracks we never list)
+            'playlist_count': min(track_count, len(entries)),
         }
 
 
@@ -593,12 +689,63 @@ class YandexMusicV2LikedPlaylistIE(YandexMusicV2PlaylistIE):
     """The user's "liked"/favorites playlist:
     https://music.yandex.ru/playlists/lk.<uuid>
 
-    The page preload contains the full (1500+ track) list; the users-API
-    fallback inherited from the base class covers a paginated/short preload.
+    The page preload contains the full (1500+ track) list; the API fallback
+    inherited from the base class covers a paginated/short preload.
     """
 
     IE_NAME = 'yandexmusicv2:liked'
-    _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/playlists/lk\.(?P<id>[0-9a-fA-F-]{36})'
+    _VALID_URL = (r'^https?://music\.yandex\.[a-z.]+/playlists/lk\.'
+                  r'(?P<id>[0-9a-fA-F-]{36})(?:[?#].*)?$')
+
+
+class YandexMusicPlaylistIE(YandexMusicV2PlaylistIE):
+    """User-playlist URLs (shadows the broken built-in ``yandexmusic:playlist``):
+
+    * ``https://music.yandex.ru/users/<login>/playlists/<kind>.<uuid>``
+      (kind ``lk``/``pl``/``ch`` — the mirror of ``/playlists/<uuid>``)
+    * ``https://music.yandex.ru/users/<login>/playlists/<kind>``
+      (numeric kind, e.g. ``3`` = liked, ``1003`` = a user playlist)
+
+    The page preloads the complete playlist (``preloadedPlaylist``) for
+    public playlists; the owner's private playlists in the uuid-mirror form
+    have no preload and are fetched by uuid via the playlist API instead.
+    """
+
+    IE_NAME = 'yandexmusic:playlist'
+    _PRELOAD_KEY = 'preloadedPlaylist'
+    _VALID_URL = (r'^https?://music\.yandex\.[a-z.]+/users/'
+                  r'(?P<login>[^/]+)/playlists/'
+                  r'(?:(?P<kind>[a-z]{2,3})\.)?(?P<id>[0-9a-fA-F-]{36}|\d+)'
+                  r'(?:[?#].*)?$')
+
+    def _parse_preloaded_playlist(self, webpage, url):
+        data = _preloaded_object(_rsc_payload(webpage), self._PRELOAD_KEY)
+        if data is not None:
+            return data
+        # no preload (e.g. the owner's private playlist in the uuid-mirror
+        # form — the web app renders a shell there too) — fetch via the API.
+        # The users API returns the most complete list, so it is tried first
+        # (the numeric kind is derived from the uuid prefix when possible);
+        # GET /playlist/<uuid> (uuid incl. its lk./pl./ch. prefix) is the
+        # fallback. Both are handled by the inherited dual-endpoint method.
+        m = re.match(self._VALID_URL, url)
+        kind, pid = m.group('kind'), m.group('id')
+        kind_map = {'lk': 3, 'pl': 1003, 'ch': 1076}
+        uid_m = re.search(r'"uid":(\d+)', _rsc_payload(webpage))
+        data = {
+            'uid': int(uid_m.group(1)) if uid_m else None,
+            'kind': kind_map.get(kind, kind),
+            'playlistUuid': f'{kind}.{pid}' if kind else pid,
+        }
+        expect_uuid = (f'{kind}.{pid}' if kind else pid)
+        if not re.fullmatch(r'[0-9a-fA-F-]{36}', pid):
+            expect_uuid = None  # numeric-kind form: nothing to verify against
+        api_data = self._fetch_playlist_via_api(data, expect_uuid=expect_uuid)
+        if api_data:
+            return api_data
+        raise ExtractorError(
+            'Yandex Music: playlist data not found in page '
+            '(is the playlist public and are cookies valid?)', expected=True)
 
 
 class YandexMusicArtistIE(InfoExtractor):
@@ -671,11 +818,14 @@ class YandexMusicArtistIE(InfoExtractor):
                 'Yandex Music: stopped after ' + str(self._MAX_PAGES) +
                 ' pages of artist tracks (pager may be misbehaving)')
 
-        cover = artist.get('ogImage') or (artist.get('cover') or {}).get('uri') or ''
-        if cover and not cover.startswith('http'):
-            cover = f'https://{cover}'
-        # '%%' is Yandex's size placeholder; 1000x1000 is the largest served
-        thumbnail = cover.replace('%%', '1000x1000') if '%%' in cover else (cover or None)
+        cover = artist.get('ogImage')
+        if not cover:
+            c = artist.get('cover')
+            # the API usually returns a dict, but a plain URL string has been
+            # seen — handle both
+            cover = c.get('uri') if isinstance(c, dict) else (
+                c if isinstance(c, str) else '')
+        thumbnail = _normalize_cover(cover)
 
         return {
             '_type': 'playlist',
@@ -683,7 +833,8 @@ class YandexMusicArtistIE(InfoExtractor):
             'title': artist.get('name'),
             'thumbnail': thumbnail,
             'entries': entries,
-            'playlist_count': total if total is not None else len(entries),
+            'playlist_count': (min(total, len(entries))
+                               if total is not None else len(entries)),
         }
 
 
@@ -746,11 +897,7 @@ class YandexMusicAlbumIE(InfoExtractor):
             for track_id in track_ids
         ]
 
-        cover = data.get('coverUri') or ''
-        if cover and not cover.startswith('http'):
-            cover = f'https://{cover}'
-        # '%%' is Yandex's size placeholder; 1000x1000 is the largest served
-        thumbnail = cover.replace('%%', '1000x1000') if '%%' in cover else (cover or None)
+        thumbnail = _normalize_cover(data.get('coverUri'))
 
         return {
             '_type': 'playlist',
@@ -758,5 +905,5 @@ class YandexMusicAlbumIE(InfoExtractor):
             'title': data.get('title'),
             'thumbnail': thumbnail,
             'entries': entries,
-            'playlist_count': track_count,
+            'playlist_count': min(track_count, len(entries)),
         }
