@@ -54,6 +54,7 @@ python3 tools/check_install.py   # from the repo checkout
 # OK:  yandexmusic:album            -> plugin (shadows broken built-in)
 # OK:  yandexmusic:artist:tracks    -> plugin (shadows broken built-in)
 # OK:  yandexmusic:playlist         -> plugin (shadows broken built-in (users/<login>/playlists URLs))
+# OK:  yandexmusic:artist:albums    -> plugin (shadows broken built-in (artist/<id>/albums URLs))
 # OK:  yandexmusicv2:playlist       -> plugin (shared playlists + charts)
 # OK:  yandexmusicv2:liked          -> plugin (liked/favorites playlists)
 # OK:  yandexmusicv2:artist         -> plugin (artist pages (all tracks))
@@ -89,7 +90,8 @@ That's it. Notes:
   (bare `https://music.yandex.ru/track/<trackId>` works too)
 * **Artist / album / liked playlist / user playlist / chart:** the page
   URLs work as-is — `https://music.yandex.ru/artist/<id>` (all of the
-  artist's tracks), `https://music.yandex.ru/album/<id>` (all of the
+  artist's tracks), `https://music.yandex.ru/artist/<id>/albums` (the
+  artist's album list), `https://music.yandex.ru/album/<id>` (all of the
   album's tracks), `https://music.yandex.ru/playlists/lk.<uuid>` (your
   "liked" list), `https://music.yandex.ru/users/<login>/playlists/<id>`
   (shared user playlists), `https://music.yandex.ru/playlists/ch.<uuid>`

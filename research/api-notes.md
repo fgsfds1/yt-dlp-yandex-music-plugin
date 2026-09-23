@@ -408,3 +408,45 @@ Both paths are best-effort (any HEAD failure is swallowed) and only
   header suppresses it.
 * The old `music.yandex.ru/handlers/*.jsx` endpoints (used by yt-dlp) are
   fully retired, not just deprecated.
+
+## Artist album lists & the webpack chunk map (2026-09-24)
+
+### Artist albums
+
+`GET /artists/<id>/albums` **404s** (cookieless and with cookies) — the
+web app does not use it. The real endpoints (found in the frontend's
+artist resource class, chunk `23767.*.js`):
+
+```
+GET /artists/<id>/direct-albums   # the artist's own releases (the Albums tab)
+GET /artists/<id>/also-albums     # featured appearances (separate tab)
+GET /artists/<id>/discography-albums
+GET /artists/<id>/safe-direct-albums
+```
+
+`direct-albums` returns the **complete list in one response** (cookieless;
+`page`/`perPage` ignored — AC/DC: 26/26). Each album: `id`, `title`,
+`year`, `coverUri`, `trackCount`, … The `/artist/<id>/albums` page
+preloads only the first 20 under `"preloadedAlbums"` (pager total 26),
+so the API is the source for the full list. The plugin's
+`YandexMusicArtistAlbumsIE` (shadow for the broken built-in
+`yandexmusic:artist:albums`) uses `direct-albums` + `GET /artists/<id>`
+for the artist name.
+
+### The webpack runtime's `a.u` lazy-chunk map — three entry styles
+
+The key-refresh scan (`_frontend_chunk_urls`) decodes `a.u`, a ternary
+chain. All three styles occur in the current frontend (v4.1626.1) and
+all three are handled:
+
+1. **literal:** `3266===e?"static/chunks/3266-bdb947223b00b411.js"`
+2. **concat:**  `32732===e?"static/chunks/"+e+"-89f7fa7b5c3e398a.js"`
+   — the chunk id is in the ternary *condition*
+3. **tables:**  `"static/chunks/"+(({…prefixTable…})[e]||e)+"."+({…suffixTable…})[e]`
+
+Gotcha (fixed 2026-09-24): the literal branch used to capture
+`static/chunks/…` *including* the prefix and then prepend the base's
+`static/chunks/` again → `…/static/chunks/static/chunks/3266-….js` →
+HTTP 404 (both literal chunks of the current frontend 404'd; the key
+happened to live in a table chunk, so refresh still worked). The same
+logic is duplicated in `tools/extract_secret_key.py` (fixed there too).

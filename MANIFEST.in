@@ -1,0 +1,6 @@
+# sdist extras (the wheel stays minimal: plugin module + metadata):
+# the README/QUICKSTART reference these paths, so ship them
+include QUICKSTART.md
+recursive-include tools *.py
+recursive-include research *.md
+include tests/conftest.py

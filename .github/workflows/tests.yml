@@ -26,7 +26,9 @@ jobs:
       - name: Install yt-dlp + plugin
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "yt-dlp>=2024.03.10" .
+          # latest yt-dlp (the declared floor is enforced by the plugin's
+          # own dependency and tested separately by the test-min job)
+          python -m pip install yt-dlp .
       - name: Sign-algorithm regression tests
         run: python tests/test_sign.py
       - name: URL-matching tests
@@ -41,6 +43,14 @@ jobs:
         run: python tests/test_artist_pagination.py
       - name: Track extraction tests
         run: python tests/test_track_extract.py
+      - name: Playlist / album / artist-albums extractor tests
+        run: python tests/test_playlist_extract.py
+      - name: Full suite under pytest (shared-fixture mode)
+        # the files also run as plain scripts above; pytest exercises the
+        # conftest.py fixtures and would catch cross-file state leaks
+        run: |
+          python -m pip install pytest
+          python -m pytest tests/ -q
       - name: Plugin install check
         run: python tools/check_install.py
 

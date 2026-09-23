@@ -26,7 +26,9 @@ reverse-engineered the current web API and replaces the extractor.
   `https://music.yandex.ru/artist/<id>` — all of the artist's tracks,
   fetched via the paginated `GET /artists/<id>/tracks` API (20/page).
   Also fixes the broken built-in
-  `https://music.yandex.ru/artist/<id>/tracks` sub-route.
+  `https://music.yandex.ru/artist/<id>/tracks` sub-route and the
+  `https://music.yandex.ru/artist/<id>/albums` album list (via
+  `GET /artists/<id>/direct-albums`).
 * Adds support for **album pages**:
   `https://music.yandex.ru/album/<id>` — all of the album's tracks
   (incl. multi-disc box sets), from the page's preloaded data; shadows
@@ -93,6 +95,7 @@ python3 tools/check_install.py
 # OK:  yandexmusic:album            -> plugin (shadows broken built-in)
 # OK:  yandexmusic:artist:tracks    -> plugin (shadows broken built-in)
 # OK:  yandexmusic:playlist         -> plugin (shadows broken built-in (users/<login>/playlists URLs))
+# OK:  yandexmusic:artist:albums    -> plugin (shadows broken built-in (artist/<id>/albums URLs))
 # OK:  yandexmusicv2:playlist       -> plugin (shared playlists + charts)
 # OK:  yandexmusicv2:liked          -> plugin (liked/favorites playlists)
 # OK:  yandexmusicv2:artist         -> plugin (artist pages (all tracks))
@@ -139,7 +142,9 @@ fallback it HEADs the stream URL and compares the estimated duration
 against the track's metadata duration). Still, verify results with
 `ffprobe -v error -show_entries format=duration file`.
 
-The per-track HEAD check can be disabled for very large playlists:
+The guard can be disabled entirely for very large playlists (note: this
+also disables the zero-cost served-quality check, so a stale session
+becomes fully silent):
 
 ```sh
 yt-dlp --extractor-args "yandexmusicv2:preview_check=off" ...
@@ -252,8 +257,8 @@ GitHub Releases.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10–3.14 matrix — installs the latest yt-dlp and the plugin, runs all test files in `tests/` and `tools/check_install.py`. **test-min** job: installs the declared yt-dlp floor. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
-| `.github/workflows/publish.yml` | GitHub **Release published**, or manual dispatch (Actions → *Publish to PyPI* → *Run workflow*; the `tag` input is **required** — a missing tag would silently resolve to the latest already-published tag and no-op) | **build** job: resolves the version (release tag → dispatch input → latest tag), validates the CalVer format *and* that it is a real calendar date, injects it into `pyproject.toml`, builds sdist + wheel, uploads the artifact. **publish** job: uploads to PyPI (see below). |
+| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10–3.14 matrix — installs the latest yt-dlp and the plugin, runs all test files in `tests/` (as plain scripts *and* under pytest), plus `tools/check_install.py`. **test-min** job: installs the declared yt-dlp floor. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
+| `.github/workflows/publish.yml` | GitHub **Release published**, or manual dispatch (Actions → *Publish to PyPI* → *Run workflow*; the `tag` input is **required** and must be an **existing** tag) | **test** job: runs the full suite — a red commit cannot be published. **build** job: validates the tag (CalVer format, real calendar date, *exists in the repo*), injects it into `pyproject.toml` (asserted), builds sdist + wheel, uploads the artifact. **publish** job: uploads to PyPI (see below). |
 
 ### How the PyPI upload is authenticated — Trusted Publishing (OIDC)
 
@@ -334,6 +339,7 @@ python3 tests/test_rsc_payload.py       # RSC payload parsing (playlist/album pr
 python3 tests/test_key_refresh.py       # hmac_key extractor-args, 403 handling, key auto-refresh
 python3 tests/test_artist_pagination.py # artist track-list pagination loop
 python3 tests/test_track_extract.py     # quality fallback + metadata mapping
+python3 tests/test_playlist_extract.py  # playlist/album/artist-albums extractors
 ```
 
 `tests/test_sign.py` verifies the signing algorithm against signatures
@@ -350,14 +356,21 @@ extraction on network errors. `tests/test_rsc_payload.py` pins the
 Next.js RSC payload parsing that the playlist/album extractors rely on
 (escaped strings, unicode, braces inside values, truncated payloads).
 `tests/test_key_refresh.py` covers the `hmac_key` extractor-arg lookup
-(all CLI/SDK forms), every 403 response shape, and the key-rejection /
+(all CLI/SDK forms), every 403 response shape, the key-rejection /
 auto-refresh flow (pinned key, successful refresh, failed refresh with
-its negative cache). `tests/test_artist_pagination.py` pins the
+its negative cache, a failed *fetch* staying retryable, the same-key
+/clock-skew case), and the frontend key scan itself (all three
+`a.u` chunk-name styles, found / no-match / fetch-fail, the disk-cache
+round-trip). `tests/test_artist_pagination.py` pins the
 artist pagination loop (pager total, a pager that ignores `?page=`,
 empty pages, the safety cap). `tests/test_track_extract.py` covers the
-lossless→nq quality fallback and the metadata mapping (incl. cover
-normalization). `tools/check_install.py` verifies an installed plugin.
-All run in CI on every push/PR — see
+lossless→nq quality fallback, the metadata mapping (incl. cover
+normalization), the real `POST /tracks` multipart request, and the
+not-found / unavailable error paths. `tests/test_playlist_extract.py`
+covers the playlist/album/artist-albums extractors end to end (full /
+short / missing preloads, the API fallbacks with the uuid guards, entry
+URL construction, multi-disc albums). `tools/check_install.py` verifies
+an installed plugin. All run in CI on every push/PR — see
 [CI/CD & releases](#cicd--releases).
 
 ## Layout
@@ -374,9 +387,11 @@ tests/test_sign.py                            sign-algorithm regression tests
 tests/test_url_matching.py                    extractor URL-matching tests
 tests/test_preview_warning.py                 silent smart_preview guard tests
 tests/test_rsc_payload.py                     RSC payload parsing tests
+tests/conftest.py                             shared pytest fixtures
 tests/test_key_refresh.py                     key rotation / 403 handling tests
 tests/test_artist_pagination.py               artist pagination loop tests
 tests/test_track_extract.py                   quality fallback / metadata tests
+tests/test_playlist_extract.py                playlist/album/artist-albums tests
 research/api-notes.md                         full API + RE documentation
 research/cdp/                                 CDP capture scripts (Node ≥ 22)
 ```

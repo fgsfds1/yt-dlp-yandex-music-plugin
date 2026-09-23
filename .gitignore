@@ -8,4 +8,5 @@ build/
 venv/
 # exported browser cookies — never commit these
 cookies*.txt
+.cookies.txt
 *.cookiejar
