@@ -78,6 +78,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.extractor.yandexmusic import YandexMusicTrackIE as _BuiltinYandexMusicTrackIE
+from yt_dlp.networking import HEADRequest
 from yt_dlp.utils import ExtractorError, float_or_none, int_or_none
 
 __all__ = [
@@ -372,6 +373,8 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                 self.report_warning(
                     f'Track {track_id}: lossless unavailable, falling back to nq')
 
+        self._warn_if_preview_served(track_id, meta, di)
+
         codec = di.get('codec') or 'mp3'
         ext = 'flac' if codec == 'flac' else 'mp3'
         artists = [a.get('name') for a in meta.get('artists', []) if a.get('name')]
@@ -412,6 +415,51 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                 'vcodec': 'none',
             }],
         }
+
+    def _warn_if_preview_served(self, track_id, meta, di):
+        """Guard against the silent preview mode: with a stale/missing
+        session the API serves `smart_preview` (13–30 s) streams for every
+        quality level — no error, the file just comes out short.
+
+        Two signals, cheapest first:
+          1. the served `quality` is a preview level (a stale session makes
+             the server report `smart_preview` for any requested quality),
+          2. the served stream is far shorter than the track's metadata
+             duration — estimated from the stream URL's Content-Length
+             (HEAD) and the served bitrate.
+        Best-effort: network problems here are never fatal.
+        """
+        served = di.get('quality')
+        if served in ('preview', 'smart_preview'):
+            self.report_warning(
+                f'Track {track_id}: server served a {served!r} stream — the '
+                f'Yandex session may be stale (the API silently serves '
+                f'smart_preview streams instead of full tracks) or this '
+                f'track may be preview-only')
+            return
+        duration_ms = meta.get('durationMs')
+        bitrate = di.get('bitrate')
+        if not (duration_ms and bitrate and di.get('url')):
+            return
+        try:
+            resp = self._downloader.urlopen(
+                HEADRequest(di['url'], headers={'User-Agent': _UA}))
+            content_length = 0
+            for k, v in (resp.headers or {}).items():
+                if k.lower() == 'content-length':
+                    content_length = int(v)
+                    break
+        except Exception:
+            return
+        if not content_length:
+            return
+        est_ms = content_length * 8 / bitrate
+        if est_ms < duration_ms * 0.5:
+            self.report_warning(
+                f'Track {track_id}: served stream is ~{est_ms / 1000:.0f} s '
+                f'but the track is {duration_ms / 1000:.0f} s — the Yandex '
+                f'session may be stale (the API silently serves smart_preview '
+                f'streams) or this track may be preview-only')
 
 
 def _rsc_payload(webpage):

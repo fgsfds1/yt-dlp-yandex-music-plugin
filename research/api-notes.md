@@ -322,6 +322,31 @@ Fallback if a preload ever comes back short: the users API
 the full playlist in one response** (verified with 1500+ tracks), so no
 API-side pagination is needed there either.
 
+## Silent preview mode & how the plugin detects it (2026-09-23)
+
+With a stale/missing session, `get-file-info` answers **200 OK for every
+quality level** but serves `smart_preview` streams (~13–30 s, 192 kbps
+MP3) — the response's `quality` field reports `smart_preview` (verified
+cookieless: requested `lossless`/`nq` → served `smart_preview`).
+
+Detection in the track extractor (`_warn_if_preview_served`), cheapest
+signal first:
+
+1. **`quality` field** — a served `preview`/`smart_preview` warns
+   immediately. Note the field does *not* blindly echo the request:
+   with a valid session, requesting `lq` serves `quality: nq` (the
+   server normalizes upward), so the check matches preview levels,
+   not "anything != requested".
+2. **Duration estimate** — HEAD the stream URL, take `Content-Length`,
+   `est_ms = bytes * 8 / bitrate` (served bitrate from the response;
+   exact for CBR MP3, close for FLAC). Warn when the estimate is under
+   50% of the track's `durationMs`. Verified: full Firesuite @192k =
+   6,626,742 B → 276.1 s vs. metadata 276.06 s; its smart_preview =
+   333,047 B → 13.9 s.
+
+Both paths are best-effort (any HEAD failure is swallowed) and only
+`report_warning` — a preview track still downloads, just flagged.
+
 ## Other observations
 
 * `account/about` → `hasPlus: true` for the test account; lossless/MP3-320

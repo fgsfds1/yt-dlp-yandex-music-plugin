@@ -26,6 +26,8 @@ jobs:
         run: python tests/test_sign.py
       - name: URL-matching tests
         run: python tests/test_url_matching.py
+      - name: Preview-mode guard tests
+        run: python tests/test_preview_warning.py
       - name: Plugin install check
         run: python tools/check_install.py
 

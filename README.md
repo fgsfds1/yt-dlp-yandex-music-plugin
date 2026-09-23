@@ -128,7 +128,10 @@ cookie — it covers `api.music.yandex.ru` automatically.
 
 **The silent failure mode:** with a stale/missing session the API
 returns `smart_preview` streams for *every* quality level — no error,
-just ~13–30 s files. Verify results with
+just ~13–30 s files. The plugin detects this and prints a warning per
+track (the response's `quality` field says `smart_preview`, and as a
+fallback it HEADs the stream URL and compares the estimated duration
+against the track's metadata duration). Still, verify results with
 `ffprobe -v error -show_entries format=duration file`.
 
 ## Usage
@@ -304,6 +307,7 @@ re-register the publisher at PyPI → account → Publishing.
 ```sh
 python3 tests/test_sign.py           # signing algorithm vs. captured vectors
 python3 tests/test_url_matching.py   # extractor URL matching (per-regex + full resolver)
+python3 tests/test_preview_warning.py  # silent smart_preview guard
 ```
 
 `tests/test_sign.py` verifies the signing algorithm against signatures
@@ -312,8 +316,12 @@ codecs-without-commas gotcha. `tests/test_url_matching.py` verifies that
 each extractor matches exactly its own URL space (all TLDs, query
 strings, malformed URLs) and that with the plugin loaded yt-dlp resolves
 each URL to the intended extractor (incl. the shadowed built-ins).
-`tools/check_install.py` verifies an installed plugin. All run in CI on
-every push/PR — see [CI/CD & releases](#cicd--releases).
+`tests/test_preview_warning.py` verifies the stale-session
+(`smart_preview`) guard: it must warn on a preview-quality response or a
+stream far shorter than the metadata duration, and never break the
+extraction on network errors. `tools/check_install.py` verifies an
+installed plugin. All run in CI on every push/PR — see
+[CI/CD & releases](#cicd--releases).
 
 ## Layout
 
@@ -327,6 +335,7 @@ tools/extract_secret_key.py                   re-extract the HMAC key
 tools/standalone_download.py                  yt-dlp-free downloader + M3U
 tests/test_sign.py                            sign-algorithm regression tests
 tests/test_url_matching.py                    extractor URL-matching tests
+tests/test_preview_warning.py                 silent smart_preview guard tests
 research/api-notes.md                         full API + RE documentation
 research/cdp/                                 CDP capture scripts (Node ≥ 22)
 ```
