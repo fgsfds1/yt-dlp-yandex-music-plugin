@@ -150,8 +150,16 @@ def get_track_meta(cookie, track_id):
         'Content-Type': f'multipart/form-data; boundary={boundary}',
     }
     req = urllib.request.Request(url, data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode())[0]
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            resp = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body_ = e.read().decode('utf-8', 'replace')[:300]
+        # RuntimeError (not SystemExit): see api_get
+        raise RuntimeError(f'HTTP {e.code} for track {track_id} metadata\n{body_}') from None
+    if not isinstance(resp, list) or not resp:
+        raise RuntimeError(f'unexpected track metadata response for {track_id}')
+    return resp[0]
 
 
 def get_download_info(cookie, track_id, quality):

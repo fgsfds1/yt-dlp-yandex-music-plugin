@@ -80,8 +80,14 @@ def chunk_urls_from_runtime(html):
     seg = js[i:j if j != -1 else i + 6000]
     base = m.group(0).rsplit('/static/chunks/', 1)[0] + '/static/chunks/'
     urls = set()
-    for name in re.findall(r'"(static/chunks/[^"]+\.js)"', seg):
+    # literal names (the capture excludes the static/chunks/ prefix —
+    # prepending it twice used to 404)
+    for name in re.findall(r'"static/chunks/([^"]+\.js)"', seg):
         urls.add(base + name)
+    # concat names: NNN===e?"static/chunks/"+e+"-HASH.js" (id in the condition)
+    for cid, hash_ in re.findall(
+            r'(\d+)===e\?"static/chunks/"\+e\+"-([a-f0-9]+)\.js"', seg):
+        urls.add(f'{base}{cid}-{hash_}.js')
     # generated names: "static/chunks/"+(prefixTable[e]||e)+"."+(suffixTable[e])
     tables = re.findall(r'\(\{([^}]+)\}\)\[e\]', seg)
     if len(tables) >= 2:

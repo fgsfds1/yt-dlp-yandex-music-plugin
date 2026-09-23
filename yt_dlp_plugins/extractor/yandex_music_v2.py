@@ -2,9 +2,9 @@
 yt-dlp plugin: Yandex Music (modern API, 2026).
 
 Shadows the broken built-in ``YandexMusicTrackIE`` / ``YandexMusicAlbumIE`` /
-``YandexMusicArtistTracksIE`` / ``YandexMusicPlaylistIE`` (which rely on the
-deprecated ``handlers/*.jsx`` endpoints that now return 404) and adds support
-for:
+``YandexMusicArtistTracksIE`` / ``YandexMusicPlaylistIE`` /
+``YandexMusicArtistAlbumsIE`` (which rely on the deprecated
+``handlers/*.jsx`` endpoints that now return 404) and adds support for:
 
 * shared playlist URLs (``https://music.yandex.ru/playlists/<uuid>``)
 * the user's "liked"/favorites playlist
@@ -13,6 +13,8 @@ for:
 * user-playlist URLs (``https://music.yandex.ru/users/<login>/playlists/<id>``)
 * artist pages (``https://music.yandex.ru/artist/<id>``) — all of the
   artist's tracks, via the paginated ``/artists/<id>/tracks`` API
+* artist album lists (``https://music.yandex.ru/artist/<id>/albums``) —
+  via ``GET /artists/<id>/direct-albums``
 * album pages (``https://music.yandex.ru/album/<id>``) — all of the
   album's tracks, from the page's preloaded data
 
@@ -95,6 +97,7 @@ __all__ = [
     'YandexMusicPlaylistIE',
     'YandexMusicArtistIE',
     'YandexMusicArtistTracksIE',
+    'YandexMusicArtistAlbumsIE',
     'YandexMusicAlbumIE',
 ]
 
@@ -197,14 +200,22 @@ _KEY_PATTERNS = (
 
 def _frontend_chunk_urls(ie, html):
     """Collect all frontend chunk URLs from the page HTML and the
-    webpack runtime's lazy-chunk map (``a.u``)."""
+    webpack runtime's lazy-chunk map (``a.u``).
+
+    ``a.u`` is a ternary chain with three entry styles (all handled):
+    * literal names:      ``3266===e?"static/chunks/3266-HASH.js"``
+    * concat names:       ``32732===e?"static/chunks/"+e+"-HASH.js"``
+      (the chunk id is in the ternary condition)
+    * hash tables:        ``"static/chunks/"+((prefixTable[e]||e)+"."+
+      suffixTable[e])``
+    """
     urls = set(re.findall(r'https://[^"\s]+?/static/chunks/[A-Za-z0-9_./()%-]+\.js', html))
     m = re.search(r'"p":"(https://[^"]+/static/chunks/)"', html)
     if m:
         for rel in re.findall(r'static/chunks/([A-Za-z0-9_./()%-]+\.js)', html):
             urls.add(m.group(1) + rel)
     for wurl in (u for u in urls if 'webpack-' in u):
-        js = ie._download_webpage(wurl, 'ym-frontend', note=None,
+        js = ie._download_webpage(wurl, 'ym-frontend', note=False,
                                   fatal=False, errnote=False)
         if not js:
             continue
@@ -214,8 +225,14 @@ def _frontend_chunk_urls(ie, html):
         j = js.find(',a.', i + 10)
         seg = js[i:j if j != -1 else i + 6000]
         base = wurl.rsplit('/static/chunks/', 1)[0] + '/static/chunks/'
-        for name in re.findall(r'"(static/chunks/[^"]+\.js)"', seg):
+        # literal names (the capture excludes the static/chunks/ prefix —
+        # prepending it twice used to 404)
+        for name in re.findall(r'"static/chunks/([^"]+\.js)"', seg):
             urls.add(base + name)
+        # concat names: the chunk id is in the ternary condition
+        for cid, hash_ in re.findall(
+                r'(\d+)===e\?"static/chunks/"\+e\+"-([a-f0-9]+)\.js"', seg):
+            urls.add(f'{base}{cid}-{hash_}.js')
         tables = re.findall(r'\(\{([^}]+)\}\)\[e\]', seg)
         if len(tables) >= 2:
             t_prefix = dict(re.findall(r'(\d+):"([a-f0-9]+)"', tables[-2]))
@@ -243,7 +260,7 @@ def _fetch_key_from_frontend(ie):
 
     def _get(u):
         try:
-            return ie._download_webpage(u, 'ym-frontend', note=None,
+            return ie._download_webpage(u, 'ym-frontend', note=False,
                                         fatal=False, errnote=False)
         except Exception:
             return None
@@ -271,6 +288,11 @@ def _fetch_key_from_frontend(ie):
         ie.write_debug(
             f'Yandex Music: key refresh scanned {len(urls)} frontend chunks, '
             f'no key pattern matched (layout change?)')
+        # a *completed* scan that found nothing means the layout changed —
+        # re-scanning within this process cannot help, so negative-cache it.
+        # (A failed homepage/chunk fetch returns before this point and stays
+        # retryable on the next track.)
+        _KEY_CACHE['refresh_failed'] = True
     return key
 
 
@@ -323,9 +345,11 @@ def _get_download_info(ie, track_id, quality):
     except ExtractorError:
         # a non-JSON 403 body makes _download_json raise before returning —
         # re-fetch the raw body to check for a rejected signature
+        # (expected_status: without it a 403 returns False, not the body)
         try:
             body = ie._download_webpage(
-                url, track_id, note=None, fatal=False, errnote=False) or ''
+                url, track_id, note=None, fatal=False, errnote=False,
+                expected_status=(403,)) or ''
         except Exception:
             body = ''
         if 'not-allowed' in body:
@@ -369,12 +393,29 @@ def _normalize_cover(cover):
 class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
     """Yandex Music track via the modern api.music.yandex.ru endpoints."""
 
+    IE_NAME = 'yandexmusic:track'  # explicit: also valid if the built-in
+    # is ever removed upstream (the ImportError fallback base class)
     _VALID_URL = (r'^https?://music\.yandex\.[a-z.]+'
                   r'/(?:album/\d+/)?track/(?P<id>\d+)(?:[?#].*)?$')
+
+    def _download_webpage_handle(self, *args, **kwargs):
+        try:
+            return super()._download_webpage_handle(*args, **kwargs)
+        except TypeError:
+            # the built-in override checks `'…' in webpage` without a type
+            # check — a fatal=False failure returns False and raises
+            # TypeError instead; treat it as a plain failure
+            if kwargs.get('fatal', True):
+                raise
+            return False
 
     def _real_extract(self, url):
         track_id = self._match_id(url)
         meta = _get_track_meta(self, track_id)
+        # a nonexistent track is not an HTTP error: 200 with error: not-found
+        if meta.get('error') == 'not-found':
+            raise ExtractorError(
+                f'Yandex Music: track {track_id} not found', expected=True)
         if not meta.get('available', True):
             raise ExtractorError(
                 f'Yandex Music: track {track_id} is not available', expected=True)
@@ -423,7 +464,9 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                             '--extractor-args "yandexmusicv2:hmac_key=<key>"',
                             expected=True) from None
                     break
-                if new_key is None:
+                if new_key == old_key:
+                    # the refreshed key is the one the server just rejected
+                    # (e.g. clock skew) — re-scanning cannot help
                     _KEY_CACHE['refresh_failed'] = True
                 hint = (' or your system clock is skewed outside the '
                          'server\'s signature window'
@@ -435,11 +478,12 @@ class YandexMusicTrackIE(_BuiltinYandexMusicTrackIE):
                     'key with tools/extract_secret_key.py and pass it via '
                     '--extractor-args "yandexmusicv2:hmac_key=<key>"',
                     expected=True)
-            except ExtractorError:
+            except ExtractorError as e:
                 if quality == 'nq':
                     raise
                 self.report_warning(
-                    f'Track {track_id}: lossless unavailable, falling back to nq')
+                    f'Track {track_id}: lossless unavailable, falling back '
+                    f'to nq ({e})')
 
         self._warn_if_preview_served(track_id, meta, di)
 
@@ -539,7 +583,13 @@ def _rsc_payload(webpage):
     """
     chunks = re.findall(
         r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', webpage)
-    return ''.join(json.loads('"' + c + '"') for c in chunks)
+    out = []
+    for c in chunks:
+        try:
+            out.append(json.loads('"' + c + '"'))
+        except json.JSONDecodeError:
+            continue  # malformed escape sequence — skip the fragment
+    return ''.join(out)
 
 
 def _preloaded_object(payload, key):
@@ -581,11 +631,21 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
     def _parse_preloaded_playlist(self, webpage, url):
         """Extract the preloaded playlist object from the Next.js RSC payload."""
         data = _preloaded_object(_rsc_payload(webpage), self._PRELOAD_KEY)
-        if data is None:
-            raise ExtractorError(
-                'Yandex Music: playlist data not found in page '
-                '(is the playlist public and are cookies valid?)', expected=True)
-        return data
+        if data is not None:
+            return data
+        # no preload (the page rendered a shell — RSC layout change, server
+        # hiccup) — the playlist API serves the full list by uuid. The
+        # stored uuid includes its lk./pl./ch. prefix: it is exactly the
+        # URL's path segment after /playlists/.
+        full_uuid = url.split('/playlists/', 1)[1]
+        full_uuid = full_uuid.split('?', 1)[0].split('#', 1)[0]
+        api_data = self._fetch_playlist_via_api(
+            {'playlistUuid': full_uuid}, expect_uuid=full_uuid)
+        if api_data:
+            return api_data
+        raise ExtractorError(
+            'Yandex Music: playlist data not found in page '
+            '(is the playlist public and are cookies valid?)', expected=True)
 
     def _fetch_playlist_via_api(self, data, expect_uuid=None):
         """Fallback: fetch the playlist (incl. full track list) via the API.
@@ -666,6 +726,8 @@ class YandexMusicV2PlaylistIE(InfoExtractor):
             api_data = self._fetch_playlist_via_api(data)
             if api_data and len(api_data.get('tracks') or []) > len(tracks):
                 tracks = api_data['tracks']
+                # the API list is authoritative — the preload's count is stale
+                track_count = api_data.get('trackCount') or len(tracks)
             elif len(tracks) < track_count:
                 self.report_warning(
                     f'Yandex Music: only {len(tracks)} of {track_count} '
@@ -734,7 +796,8 @@ class YandexMusicPlaylistIE(YandexMusicV2PlaylistIE):
         uid_m = re.search(r'"uid":(\d+)', _rsc_payload(webpage))
         data = {
             'uid': int(uid_m.group(1)) if uid_m else None,
-            'kind': kind_map.get(kind, kind),
+            # numeric-kind form: the kind *is* the id (e.g. /playlists/3)
+            'kind': kind_map.get(kind) or (int(pid) if pid.isdigit() else None),
             'playlistUuid': f'{kind}.{pid}' if kind else pid,
         }
         expect_uuid = (f'{kind}.{pid}' if kind else pid)
@@ -846,6 +909,59 @@ class YandexMusicArtistTracksIE(YandexMusicArtistIE):
 
     IE_NAME = 'yandexmusic:artist:tracks'
     _VALID_URL = r'^https?://music\.yandex\.[a-z.]+/artist/(?P<id>\d+)/tracks(?:[?#].*)?$'
+
+
+class YandexMusicArtistAlbumsIE(InfoExtractor):
+    """An artist's albums (shadows the broken built-in
+    ``yandexmusic:artist:albums``): https://music.yandex.ru/artist/<id>/albums
+
+    The page preloads only the first 20 albums; the complete list — the
+    artist's own releases, matching the web app's Albums tab — comes from
+    ``GET /artists/<id>/direct-albums`` (one response, cookieless; the
+    server ignores ``page``/``perPage``). Featured appearances
+    (``/also-albums``) are a separate web-app tab and are not included.
+    """
+
+    IE_NAME = 'yandexmusic:artist:albums'
+    _VALID_URL = (r'^https?://music\.yandex\.[a-z.]+/artist/(?P<id>\d+)'
+                  r'/albums(?:[?#].*)?$')
+
+    def _real_extract(self, url):
+        artist_id = self._match_id(url)
+        host = re.match(r'https?://([^/]+)/', url).group(1)
+        info = self._download_json(
+            f'{_API}/artists/{artist_id}', artist_id,
+            note='Yandex Music: downloading artist info',
+            headers=_api_headers(),
+            errnote='Yandex Music: failed to download artist info')
+        artist = info.get('artist') or {}
+        # a nonexistent artist is not an HTTP error: 200 with artist.error
+        if artist.get('error') == 'not-found' or not artist.get('name'):
+            raise ExtractorError(
+                f'Yandex Music: artist {artist_id} not found', expected=True)
+        data = self._download_json(
+            f'{_API}/artists/{artist_id}/direct-albums', artist_id,
+            note='Yandex Music: downloading artist albums',
+            headers=_api_headers(),
+            errnote='Yandex Music: failed to download artist albums')
+        if isinstance(data, dict) and isinstance(data.get('result'), dict):
+            data = data['result']
+        albums = [a for a in (data or {}).get('albums') or []
+                  if isinstance(a, dict) and a.get('id')]
+        entries = []
+        for album in albums:
+            entries.append(self.url_result(
+                f'https://{host}/album/{album["id"]}',
+                ie_key=YandexMusicAlbumIE.ie_key(),
+                video_id=str(album['id']),
+                video_title=album.get('title')))
+        return {
+            '_type': 'playlist',
+            'id': artist_id,
+            'title': f'{artist["name"]} — albums',
+            'entries': entries,
+            'playlist_count': len(entries),
+        }
 
 
 class YandexMusicAlbumIE(InfoExtractor):
