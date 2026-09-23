@@ -53,7 +53,8 @@ python3 tools/check_install.py   # from the repo checkout
 # OK:  yandexmusic:track            -> plugin (shadows broken built-in)
 # OK:  yandexmusic:album            -> plugin (shadows broken built-in)
 # OK:  yandexmusic:artist:tracks    -> plugin (shadows broken built-in)
-# OK:  yandexmusicv2:playlist       -> plugin (shared playlists)
+# OK:  yandexmusic:playlist         -> plugin (shadows broken built-in (users/<login>/playlists URLs))
+# OK:  yandexmusicv2:playlist       -> plugin (shared playlists + charts)
 # OK:  yandexmusicv2:liked          -> plugin (liked/favorites playlists)
 # OK:  yandexmusicv2:artist         -> plugin (artist pages (all tracks))
 ```
@@ -86,10 +87,13 @@ That's it. Notes:
   cover
 * **Single track:** `yt-dlp --cookies cookies.txt 'https://music.yandex.ru/album/<albumId>/track/<trackId>'`
   (bare `https://music.yandex.ru/track/<trackId>` works too)
-* **Artist / album / liked playlist:** the page URLs work as-is —
-  `https://music.yandex.ru/artist/<id>` (all of the artist's tracks),
-  `https://music.yandex.ru/album/<id>` (all of the album's tracks),
-  `https://music.yandex.ru/playlists/lk.<uuid>` (your "liked" list)
+* **Artist / album / liked playlist / user playlist / chart:** the page
+  URLs work as-is — `https://music.yandex.ru/artist/<id>` (all of the
+  artist's tracks), `https://music.yandex.ru/album/<id>` (all of the
+  album's tracks), `https://music.yandex.ru/playlists/lk.<uuid>` (your
+  "liked" list), `https://music.yandex.ru/users/<login>/playlists/<id>`
+  (shared user playlists), `https://music.yandex.ru/playlists/ch.<uuid>`
+  (charts)
 * **Only some tracks:** add `-I 1-5` (first five), `-I 3` (one), `-I 10-20` (range)
 * **Output dir:** add `-P /path/to/dir`
 * You get the best quality the server offers: FLAC if available, else

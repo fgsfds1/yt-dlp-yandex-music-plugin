@@ -322,6 +322,55 @@ Fallback if a preload ever comes back short: the users API
 the full playlist in one response** (verified with 1500+ tracks), so no
 API-side pagination is needed there either.
 
+## User-playlist URLs & charts (2026-09-24)
+
+### `/users/<login>/playlists/<id>` — the mirror of `/playlists/<uuid>`
+
+Two URL forms (both verified 2026-09-24):
+
+* `…/users/<login>/playlists/<kind>.<uuid>` — the uuid-mirror form
+  (kind `lk`/`pl`/`ch`),
+* `…/users/<login>/playlists/<numeric-kind>` — e.g. `3` = liked,
+  `1003` = a user playlist (the canonical URL the web app uses for the
+  owner's own playlists).
+
+The page preloads the **complete** playlist under a *different* RSC key:
+`"preloadedPlaylist":{…}` (flat, same shape as
+`preloadedPlaylistByUuid`: `uid`, `kind`, `playlistUuid`, `title`,
+`trackCount`, `tracks[]`, `owner`, `available`). Verified for the
+owner's own private liked playlist in the numeric-kind form
+(1544/1544 tracks preloaded).
+
+**Gotcha:** the uuid-mirror form of a *private* playlist has **no
+preload at all** (the page renders a not-found shell; the owner's uid is
+still present in the RSC payload). The plugin falls back to
+`GET /playlist/<uuid>` for that case.
+
+### `GET /playlist/<uuid>` — direct playlist-by-uuid API
+
+```
+GET /playlist/lk.8edd98ff-…?resumeStream=false&richTracks=false
+```
+
+Returns the full playlist object (same shape as the page preload) for
+any uuid — public playlists cookieless, private ones with the owner's
+cookies (verified for a private liked playlist and a chart). The
+`kind` in the URL is the **uuid** (with its `lk.`/`ch.` prefix), not a
+numeric kind; `GET /users/<uid>/playlists/lk` (string kind) is a 404 —
+the users API only takes numeric kinds. With the
+`x-yandex-music-without-invocation-info: 1` header the response is flat;
+without it the body is wrapped in `{"invocationInfo": …, "result": …}`.
+
+### Charts — `https://music.yandex.ru/playlists/ch.<uuid>`
+
+A chart is an ordinary playlist: kind **1076**, owner `yamusic-top`
+(uid 414787002), uuid **stored with the `ch.` prefix** (like the `lk.`
+prefix — it is part of the uuid, not client-constructed). The page
+preloads `preloadedPlaylistByUuid` with the full top-100 list
+(verified cookieless). Chart track entries are minimal —
+`{originalIndex, originalShuffleIndex, timestamp, id}`, **no `albumId`**
+— so track URLs must fall back to the bare `/track/<id>` form.
+
 ## Silent preview mode & how the plugin detects it (2026-09-23)
 
 With a stale/missing session, `get-file-info` answers **200 OK for every

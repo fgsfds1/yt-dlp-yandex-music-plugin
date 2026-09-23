@@ -15,9 +15,13 @@ reverse-engineered the current web API and replaces the extractor.
 * Fixes `https://music.yandex.ru/album/<albumId>/track/<trackId>`
   (shadows the broken built-in `YandexMusicTrackIE`).
 * Adds support for **shared playlists**:
-  `https://music.yandex.ru/playlists/<uuid>` (not supported by upstream).
+  `https://music.yandex.ru/playlists/<uuid>` (not supported by upstream),
+  including **charts** (`https://music.yandex.ru/playlists/ch.<uuid>`).
 * Adds support for the **"liked"/favorites playlist**:
   `https://music.yandex.ru/playlists/lk.<uuid>` (tested with 1500+ tracks).
+* Adds support for **user-playlist URLs**:
+  `https://music.yandex.ru/users/<login>/playlists/<id>` (uuid or numeric
+  kind) — shadows the broken built-in `YandexMusicPlaylistIE`.
 * Adds support for **artist pages**:
   `https://music.yandex.ru/artist/<id>` — all of the artist's tracks,
   fetched via the paginated `GET /artists/<id>/tracks` API (20/page).
@@ -88,7 +92,8 @@ python3 tools/check_install.py
 # OK:  yandexmusic:track            -> plugin (shadows broken built-in)
 # OK:  yandexmusic:album            -> plugin (shadows broken built-in)
 # OK:  yandexmusic:artist:tracks    -> plugin (shadows broken built-in)
-# OK:  yandexmusicv2:playlist       -> plugin (shared playlists)
+# OK:  yandexmusic:playlist         -> plugin (shadows broken built-in (users/<login>/playlists URLs))
+# OK:  yandexmusicv2:playlist       -> plugin (shared playlists + charts)
 # OK:  yandexmusicv2:liked          -> plugin (liked/favorites playlists)
 # OK:  yandexmusicv2:artist         -> plugin (artist pages (all tracks))
 ```
@@ -134,6 +139,12 @@ fallback it HEADs the stream URL and compares the estimated duration
 against the track's metadata duration). Still, verify results with
 `ffprobe -v error -show_entries format=duration file`.
 
+The per-track HEAD check can be disabled for very large playlists:
+
+```sh
+yt-dlp --extractor-args "yandexmusicv2:preview_check=off" ...
+```
+
 ## Usage
 
 ```sh
@@ -150,6 +161,12 @@ yt-dlp --cookies cookies.txt 'https://music.yandex.ru/artist/<id>'
 
 # all tracks of an album (incl. multi-disc box sets)
 yt-dlp --cookies cookies.txt 'https://music.yandex.ru/album/<id>'
+
+# user-playlist URL (uuid or numeric kind, e.g. 3 = liked)
+yt-dlp --cookies cookies.txt 'https://music.yandex.ru/users/<login>/playlists/<id>'
+
+# chart (top-100)
+yt-dlp --cookies cookies.txt 'https://music.yandex.ru/playlists/ch.<uuid>'
 
 # single track
 yt-dlp --cookies cookies.txt \
@@ -209,10 +226,11 @@ yt-dlp --extractor-args "yandexmusicv2:hmac_key=<key>" ...
 ```
 
 The `hmac_key` extractor-arg also works for testing/overrides and takes
-priority over the auto-refresh. Accepted names: `yandexmusicv2`,
-`yandexmusic`, `yandexmusic:track`, `yandexmusic:album`,
-`yandexmusic:artist:tracks`, `yandexmusicv2:playlist`,
-`yandexmusicv2:liked`, `yandexmusicv2:artist`, `yandexmusicv2:album`.
+priority over the auto-refresh. Accepted names (top-level or per-IE,
+e.g. `yandexmusicv2:hmac_key=…` or `yandexmusic:track:hmac_key=…`):
+`yandexmusicv2`, `yandexmusic`, `yandexmusic:track`, `yandexmusic:album`,
+`yandexmusic:artist:tracks`, `yandexmusic:playlist`,
+`yandexmusicv2:playlist`, `yandexmusicv2:liked`, `yandexmusicv2:artist`.
 
 ## Versioning
 
@@ -234,8 +252,8 @@ GitHub Releases.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10 + 3.14 matrix — installs the latest yt-dlp and the plugin, runs `tests/test_sign.py`, `tests/test_url_matching.py` and `tools/check_install.py`. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
-| `.github/workflows/publish.yml` | GitHub **Release published**, or manual dispatch (Actions → *Publish to PyPI* → *Run workflow*; optional `tag` input, defaults to the latest tag on the branch) | **build** job: resolves the version (release tag → dispatch input → latest tag), validates the CalVer format *and* that it is a real calendar date, injects it into `pyproject.toml`, builds sdist + wheel, uploads the artifact. **publish** job: uploads to PyPI (see below). |
+| `.github/workflows/tests.yml` | every push / PR to `master` | **test** job: Python 3.10–3.14 matrix — installs the latest yt-dlp and the plugin, runs all test files in `tests/` and `tools/check_install.py`. **test-min** job: installs the declared yt-dlp floor. **build** job: builds sdist + wheel (packaging sanity check), uploads a `dist` artifact. |
+| `.github/workflows/publish.yml` | GitHub **Release published**, or manual dispatch (Actions → *Publish to PyPI* → *Run workflow*; the `tag` input is **required** — a missing tag would silently resolve to the latest already-published tag and no-op) | **build** job: resolves the version (release tag → dispatch input → latest tag), validates the CalVer format *and* that it is a real calendar date, injects it into `pyproject.toml`, builds sdist + wheel, uploads the artifact. **publish** job: uploads to PyPI (see below). |
 
 ### How the PyPI upload is authenticated — Trusted Publishing (OIDC)
 
@@ -282,8 +300,12 @@ re-register the publisher at PyPI → account → Publishing.
 
    ```sh
    python3 -m venv /tmp/ymtest && /tmp/ymtest/bin/pip install yt-dlp-yandex-music
-   /tmp/ymtest/bin/python tools/check_install.py   # both lines OK
+   /tmp/ymtest/bin/python tools/check_install.py   # all lines OK
    ```
+
+   Note: PyPI displays **PEP 440-normalized** versions — tag
+   `2026.09.23` appears on PyPI as `2026.9.23` (zero-padding stripped).
+   That is correct behavior, not a bug.
 
 ### Version edge cases
 
@@ -305,22 +327,37 @@ re-register the publisher at PyPI → account → Publishing.
 ## Tests
 
 ```sh
-python3 tests/test_sign.py           # signing algorithm vs. captured vectors
-python3 tests/test_url_matching.py   # extractor URL matching (per-regex + full resolver)
-python3 tests/test_preview_warning.py  # silent smart_preview guard
+python3 tests/test_sign.py              # signing algorithm vs. captured vectors
+python3 tests/test_url_matching.py      # extractor URL matching (per-regex + full resolver)
+python3 tests/test_preview_warning.py   # silent smart_preview guard
+python3 tests/test_rsc_payload.py       # RSC payload parsing (playlist/album preloads)
+python3 tests/test_key_refresh.py       # hmac_key extractor-args, 403 handling, key auto-refresh
+python3 tests/test_artist_pagination.py # artist track-list pagination loop
+python3 tests/test_track_extract.py     # quality fallback + metadata mapping
 ```
 
 `tests/test_sign.py` verifies the signing algorithm against signatures
 captured from live web app traffic (2026-08-17), including the
-codecs-without-commas gotcha. `tests/test_url_matching.py` verifies that
+codecs-without-commas gotcha and the plugin's own codec/transport
+parameter combination. `tests/test_url_matching.py` verifies that
 each extractor matches exactly its own URL space (all TLDs, query
 strings, malformed URLs) and that with the plugin loaded yt-dlp resolves
 each URL to the intended extractor (incl. the shadowed built-ins).
 `tests/test_preview_warning.py` verifies the stale-session
 (`smart_preview`) guard: it must warn on a preview-quality response or a
 stream far shorter than the metadata duration, and never break the
-extraction on network errors. `tools/check_install.py` verifies an
-installed plugin. All run in CI on every push/PR — see
+extraction on network errors. `tests/test_rsc_payload.py` pins the
+Next.js RSC payload parsing that the playlist/album extractors rely on
+(escaped strings, unicode, braces inside values, truncated payloads).
+`tests/test_key_refresh.py` covers the `hmac_key` extractor-arg lookup
+(all CLI/SDK forms), every 403 response shape, and the key-rejection /
+auto-refresh flow (pinned key, successful refresh, failed refresh with
+its negative cache). `tests/test_artist_pagination.py` pins the
+artist pagination loop (pager total, a pager that ignores `?page=`,
+empty pages, the safety cap). `tests/test_track_extract.py` covers the
+lossless→nq quality fallback and the metadata mapping (incl. cover
+normalization). `tools/check_install.py` verifies an installed plugin.
+All run in CI on every push/PR — see
 [CI/CD & releases](#cicd--releases).
 
 ## Layout
@@ -336,6 +373,10 @@ tools/standalone_download.py                  yt-dlp-free downloader + M3U
 tests/test_sign.py                            sign-algorithm regression tests
 tests/test_url_matching.py                    extractor URL-matching tests
 tests/test_preview_warning.py                 silent smart_preview guard tests
+tests/test_rsc_payload.py                     RSC payload parsing tests
+tests/test_key_refresh.py                     key rotation / 403 handling tests
+tests/test_artist_pagination.py               artist pagination loop tests
+tests/test_track_extract.py                   quality fallback / metadata tests
 research/api-notes.md                         full API + RE documentation
 research/cdp/                                 CDP capture scripts (Node ≥ 22)
 ```
