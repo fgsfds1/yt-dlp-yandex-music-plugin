@@ -7,8 +7,8 @@ yt-dlp the list-extractors path runs before `load_all_plugins()`, so
 plugins are invisible there. This script loads the plugins explicitly
 and checks:
 
-  1. the shadowed built-ins (track, album, artist:tracks) are served by
-     the plugin,
+  1. the shadowed built-ins (track, album, artist:tracks, playlist)
+     are served by the plugin,
   2. the plugin-only extractors (shared playlist, liked playlist,
      artist page) are present.
 
@@ -28,8 +28,10 @@ EXPECTED = [
      'shadows broken built-in'),
     ('yandexmusic:artist:tracks', 'YandexMusicArtistTracksIE',
      'shadows broken built-in'),
+    ('yandexmusic:playlist', 'YandexMusicPlaylistIE',
+     'shadows broken built-in (users/<login>/playlists URLs)'),
     ('yandexmusicv2:playlist', 'YandexMusicV2PlaylistIE',
-     'shared playlists'),
+     'shared playlists + charts'),
     ('yandexmusicv2:liked', 'YandexMusicV2LikedPlaylistIE',
      'liked/favorites playlists'),
     ('yandexmusicv2:artist', 'YandexMusicArtistIE',

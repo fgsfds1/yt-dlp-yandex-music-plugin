@@ -18,7 +18,9 @@ Usage:
         [--m3u /path/to/Playlist.m3u] [--wine-prefix Z:\\home\\lw\\Music]
 
 Cookies: Netscape-format cookie file (e.g. exported from a browser or via
-yt-dlp), must contain a logged-in Yandex Music session.
+yt-dlp), must contain a logged-in Yandex Music session. Only `yandex.ru`
+cookies are used (a full-browser export with thousands of cookies would
+otherwise make the request header too large).
 """
 
 import argparse
@@ -26,6 +28,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import sys
 import time
@@ -64,7 +67,9 @@ RESERVED = {'CON', 'PRN', 'AUX', 'NUL'} | \
 def sanitize(name):
     out = []
     for ch in name.strip():
-        out.append(ch if ord(ch) < 128 else CYR.get(ch, ''))
+        # keep non-Cyrillic non-ASCII (e.g. 'é') instead of dropping it —
+        # the M3U is UTF-8 and modern filesystems handle such names fine
+        out.append(ch if ord(ch) < 128 else CYR.get(ch, ch))
     name = ''.join(out)
     for ch in INVALID:
         name = name.replace(ch, ' ')
@@ -76,14 +81,28 @@ def sanitize(name):
 
 def load_cookie_header(path):
     pairs = []
-    for line in open(path, encoding='utf-8'):
-        if not line.strip() or line.startswith('#'):
-            continue
-        parts = line.rstrip('\n').split('\t')
-        if len(parts) >= 7:
-            pairs.append(f'{parts[5]}={parts[6]}')
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            if not line.strip() or line.startswith('#'):
+                continue
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 7:
+                continue
+            domain, name, value = parts[0], parts[5], parts[6]
+            # only yandex.ru cookies are needed — a full-browser export
+            # (thousands of cookies) makes the header too large (HTTP 413)
+            if not domain.lstrip('.').endswith('yandex.ru'):
+                continue
+            # urllib sends headers as latin-1 — drop cookies it cannot
+            # encode (some Yandex cookie values contain unicode; the
+            # session cookie is ASCII and always survives)
+            try:
+                f'{name}={value}'.encode('latin-1')
+            except UnicodeEncodeError:
+                continue
+            pairs.append(f'{name}={value}')
     if not pairs:
-        sys.exit(f'no cookies found in {path}')
+        sys.exit(f'no yandex.ru cookies found in {path}')
     return '; '.join(pairs)
 
 
@@ -173,7 +192,6 @@ def main():
                     help='Wine-style prefix for M3U paths, e.g. Z:\\home\\lw\\Music')
     args = ap.parse_args()
 
-    import os
     os.makedirs(args.out, exist_ok=True)
     cookie = load_cookie_header(args.cookies)
 
@@ -230,7 +248,8 @@ def main():
     print(f'done: {len(m3u_lines)} ok, {len(failures)} failed')
     for idx, tid, err in failures:
         print(f'  failed [{idx:02d}] track {tid}: {err}', file=sys.stderr)
-    sys.exit(1 if failures and not m3u_lines else 0)
+    # any failure -> nonzero exit, even if some files were written
+    sys.exit(1 if failures else 0)
 
 
 if __name__ == '__main__':

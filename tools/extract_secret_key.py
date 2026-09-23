@@ -122,7 +122,8 @@ def find_consumer_imports(js):
 
 
 def extract_key_from_module(js, module_id):
-    m = re.search(rf'{module_id}\s*:\s*\(', js)
+    # (?<!\d): avoid matching a longer id (125079 contains 25079)
+    m = re.search(rf'(?<!\d){module_id}\s*:\s*\(', js)
     if not m:
         return None
     body = js[m.start(): m.start() + 3000]
@@ -170,17 +171,25 @@ def main():
     check = '--check' in args
     page_url = 'https://music.yandex.ru/'
     if '--url' in args:
-        page_url = args[args.index('--url') + 1]
+        i = args.index('--url')
+        if i + 1 >= len(args):
+            print('ERROR: --url requires a value', file=sys.stderr)
+            sys.exit(1)
+        page_url = args[i + 1]
 
     html = fetch(page_url)
     urls = chunk_urls_from_html(html) | chunk_urls_from_runtime(html)
     print(f'{len(urls)} chunk URLs (page: {page_url})', file=sys.stderr)
 
     def _get(u):
-        try:
-            return u, fetch(u)
-        except Exception:
-            return u, None
+        # one retry: a transient 5xx on the key-bearing chunk used to yield
+        # the scariest false alarm ("frontend layout may have changed")
+        for attempt in (1, 2):
+            try:
+                return u, fetch(u)
+            except Exception:
+                if attempt == 2:
+                    return u, None
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(_get, urls))
